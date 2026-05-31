@@ -1,0 +1,18 @@
+version: "1.0"
+refresh_interval_hours: 24
+
+sources:
+  - type: static
+    tickers:
+      - AAPL    # Apple
+      - MSFT    # Microsoft
+      - GOOGL   # Alphabet
+      - NVDA    # NVIDIA
+      - AMZN    # Amazon
+      - META    # Meta
+      - TSLA    # Tesla
+      - JPM     # JPMorgan Chase
+      - JNJ     # Johnson & Johnson
+      - NFLX    # Netflix
+
+exclude: []

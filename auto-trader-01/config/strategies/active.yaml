@@ -1,0 +1,16 @@
+active_strategies:
+
+  - id: fundamental_v1
+    enabled: true
+    markets: [us]
+    config_file: strategies/fundamental.yaml
+
+  - id: technical_v1
+    enabled: false
+    markets: [us, india]
+    config_file: strategies/technical.yaml
+
+  - id: hybrid_v1
+    enabled: false
+    markets: [india]
+    config_file: strategies/hybrid.yaml

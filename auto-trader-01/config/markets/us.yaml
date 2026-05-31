@@ -1,0 +1,31 @@
+market_id: us
+currency: USD
+timezone: "America/New_York"
+exchanges: [NYSE, NASDAQ]
+
+sessions:
+  preopen_start: null
+  preopen_end: null
+  market_open: "09:30"
+  market_close: "16:00"
+
+announcement_sources:
+  free: [sec_edgar]
+  paid_addon: null
+
+market_data:
+  free: yfinance
+  paid_addon: null
+
+broker: alpaca_paper
+
+tax_rules:
+  short_term_days: 365
+  short_term_rate: null
+  long_term_rate: null
+  wash_sale_rule: true
+
+regulatory:
+  circuit_breaker_enabled: false
+  static_ip_required: false
+  algo_registration_threshold_ops: null

@@ -1,0 +1,43 @@
+# Local caches (document fetch + Claude analysis results)
+.cache/
+
+# Claude Code editor settings
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+
+# uv / virtual environments
+.venv/
+.uv/
+
+# Environment — never commit real secrets
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+
+# Logs
+*.log
+logs/
+
+# macOS
+.DS_Store
+
+# Alembic compiled files
+*.pyc

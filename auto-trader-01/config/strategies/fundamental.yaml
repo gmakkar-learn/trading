@@ -1,0 +1,27 @@
+version: "1.0"
+
+scoring:
+  weights:
+    pat_beat: 0.30
+    revenue_beat: 0.20
+    margin_direction: 0.20
+    guidance_change: 0.15
+    dividend_signal: 0.10
+    exceptional_penalty: -0.15
+
+  consensus_component:
+    enabled: false
+    weight: 0.15
+
+  thresholds:
+    strong_buy: 75
+    moderate_buy: 60
+    neutral_low: 40
+
+execution:
+  auto_threshold: 85
+  limit_price_slippage: 0.005
+  stoploss_pct: 0.05
+  target_pct: 0.12
+  product_type: market
+  preferred_exchange: primary
