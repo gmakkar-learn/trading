@@ -18,6 +18,7 @@ class AuditLogger:
         ticker: str | None = None,
         reason: str | None = None,
         signal: Any | None = None,
+        signal_id: str | None = None,
         order_id: str | None = None,
     ) -> None:
         from infrastructure.database.models.audit_log import AuditLog  # noqa: PLC0415
@@ -28,6 +29,8 @@ class AuditLogger:
                 signal_json = dataclasses.asdict(signal)
             except TypeError:
                 signal_json = {"raw": str(signal)}
+        elif signal_id is not None:
+            signal_json = {"signal_id": signal_id}
 
         entry = AuditLog(
             market_id=market_id,

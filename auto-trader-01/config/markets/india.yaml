@@ -1,0 +1,32 @@
+market_id: india
+currency: INR
+timezone: "Asia/Kolkata"
+exchanges: [NSE, BSE]
+
+sessions:
+  preopen_start: "09:00"
+  preopen_end: "09:15"
+  market_open: "09:15"
+  market_close: "15:30"
+
+announcement_sources:
+  free: [bse_corporate_results, nse_corporate_results]
+  paid_addon: null
+
+market_data:
+  free: upstox_quotes
+  paid_addon: null
+
+broker: upstox_sandbox
+
+tax_rules:
+  short_term_days: 365
+  short_term_rate: 0.15        # STCG on equity (post-Jul 2024 budget)
+  long_term_rate: 0.125        # LTCG on equity >₹1.25L (post-Jul 2024 budget)
+  wash_sale_rule: false
+
+regulatory:
+  circuit_breaker_enabled: true
+  static_ip_required: true     # required for Upstox live API
+  algo_registration_threshold_ops: 10
+  product_type: CNC            # delivery only — never MIS

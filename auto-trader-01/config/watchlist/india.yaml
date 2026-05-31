@@ -1,0 +1,18 @@
+version: "1.0"
+refresh_interval_hours: 24
+
+sources:
+  - type: static
+    tickers:
+      - RELIANCE      # Reliance Industries — energy, telecom, retail conglomerate
+      - TCS           # Tata Consultancy Services — IT services
+      - INFY          # Infosys — IT services
+      - HDFCBANK      # HDFC Bank — private sector banking
+      - ICICIBANK     # ICICI Bank — private sector banking
+      - WIPRO         # Wipro — IT services
+      - LT            # Larsen & Toubro — engineering, infrastructure
+      - AXISBANK      # Axis Bank — private sector banking
+      - HINDUNILVR    # Hindustan Unilever — FMCG
+      - ITC           # ITC Limited — FMCG, hospitality, paperboards
+
+exclude: []

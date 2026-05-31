@@ -81,3 +81,100 @@ class SignalRejectedEvent(DataEvent):
     market_id: str = ""
     reason: str = ""
     signal_id: str = ""
+
+
+# ── Risk Guard → Trader ───────────────────────────────────────────────────────
+
+@dataclass
+class OrderProposal:
+    """Constructed by Risk Guard after all checks pass; consumed by Trader."""
+    proposal_id: str = field(default_factory=_uuid)
+    signal_id: str = ""
+    ticker: str = ""
+    market_id: str = ""
+    side: str = ""              # "BUY" | "SELL"
+    quantity: int = 0
+    limit_price: float = 0.0
+    stoploss: float = 0.0
+    target: float = 0.0
+    composite_score: float = 0.0
+    rationale: str = ""
+    created_at: datetime = field(default_factory=datetime.utcnow)
+
+
+@dataclass
+class OrderProposalEvent(DataEvent):
+    proposal: OrderProposal | None = None
+
+
+# ── Trader → Broker ───────────────────────────────────────────────────────────
+
+@dataclass
+class Order:
+    """Broker-normalised order passed to BrokerAdapter.place_order()."""
+    order_id: str = field(default_factory=_uuid)
+    proposal_id: str = ""
+    signal_id: str = ""
+    ticker: str = ""
+    market_id: str = ""
+    side: str = ""
+    quantity: int = 0
+    order_type: str = "LIMIT"   # "LIMIT" | "MARKET"
+    limit_price: float = 0.0
+    product_type: str = "CNC"   # India: always CNC; US: DAY
+    created_at: datetime = field(default_factory=datetime.utcnow)
+
+
+@dataclass
+class OrderResult:
+    order_id: str = ""
+    broker_order_id: str = ""
+    status: str = ""            # "ACCEPTED" | "REJECTED" | "FILLED"
+    fill_price: float = 0.0
+    message: str = ""
+
+
+# ── Trader → Monitor ──────────────────────────────────────────────────────────
+
+@dataclass
+class TradeRecord:
+    trade_id: str = field(default_factory=_uuid)
+    order_id: str = ""
+    broker_order_id: str = ""
+    signal_id: str = ""
+    ticker: str = ""
+    market_id: str = ""
+    strategy_type: str = ""
+    side: str = ""
+    quantity: int = 0
+    fill_price: float = 0.0
+    currency: str = ""
+    filled_at: datetime = field(default_factory=datetime.utcnow)
+
+
+@dataclass
+class OrderPlacedEvent(DataEvent):
+    trade: TradeRecord | None = None
+
+
+# ── Approval flow ─────────────────────────────────────────────────────────────
+
+@dataclass
+class ApprovalRequest:
+    request_id: str = field(default_factory=_uuid)
+    proposal_id: str = ""
+    ticker: str = ""
+    market_id: str = ""
+    side: str = ""
+    quantity: int = 0
+    limit_price: float = 0.0
+    composite_score: float = 0.0
+    rationale: str = ""
+    expires_at: datetime = field(default_factory=datetime.utcnow)
+
+
+@dataclass
+class ApprovalEvent(DataEvent):
+    request_id: str = ""
+    approved: bool = False
+    approver: str = ""          # "telegram" | "dashboard" | "auto"
