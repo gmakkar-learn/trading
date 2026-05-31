@@ -1,0 +1,13 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Claude Code editor settings
+.claude/
+
+# Python virtual environments
+.venv/
+
+# Environment files at repo root
+.env
