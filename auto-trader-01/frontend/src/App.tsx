@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
 import type { Signal, Position, Holding, BrokerOrder } from "./api";
+import { TvChart } from "./components/TvChart";
 import "./App.css";
 
-type Tab = "signals" | "positions" | "orders" | "watchlist";
+type Tab = "signals" | "positions" | "orders" | "watchlist" | "chart";
 
 function badge(action: string) {
   const colors: Record<string, string> = { BUY: "#16a34a", SELL: "#dc2626", HOLD: "#d97706" };
@@ -23,7 +24,7 @@ function confBadge(c: string) {
   );
 }
 
-function SignalsTab() {
+function SignalsTab({ onChart }: { onChart: (ticker: string, market: "us" | "india") => void }) {
   const [signals, setSignals] = useState<Signal[]>([]);
   const [market, setMarket] = useState("");
   const [loading, setLoading] = useState(false);
@@ -55,7 +56,11 @@ function SignalsTab() {
         {signals.map(s => (
           <div key={s.signal_id} style={{ border: "1px solid #374151", borderRadius: 8, padding: 16, background: "#111827" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <span style={{ fontWeight: 700, fontSize: 18 }}>
+              <span
+                style={{ fontWeight: 700, fontSize: 18, cursor: "pointer" }}
+                onClick={() => onChart(s.ticker, s.market_id as "us" | "india")}
+                title="View chart"
+              >
                 {s.ticker} <span style={{ fontSize: 12, color: "#9ca3af" }}>{s.market_id.toUpperCase()}</span>
               </span>
               <div style={{ display: "flex", gap: 6 }}>
@@ -75,7 +80,7 @@ function SignalsTab() {
   );
 }
 
-function PositionsTab() {
+function PositionsTab({ onChart }: { onChart: (ticker: string, market: "us" | "india") => void }) {
   const [positions, setPositions] = useState<Position[]>([]);
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const [loading, setLoading] = useState(false);
@@ -110,7 +115,11 @@ function PositionsTab() {
           <tbody>
             {positions.map(p => (
               <tr key={`${p.market_id}-${p.ticker}`} style={{ borderTop: "1px solid #1f2937" }}>
-                <td style={{ padding: "8px" }}><strong>{p.ticker}</strong></td>
+                <td style={{ padding: "8px" }}>
+                  <strong style={{ cursor: "pointer" }} onClick={() => onChart(p.ticker, p.market_id as "us" | "india")} title="View chart">
+                    {p.ticker}
+                  </strong>
+                </td>
                 <td style={{ color: "#9ca3af", padding: "8px" }}>{p.market_id}</td>
                 <td style={{ padding: "8px" }}>{p.quantity}</td>
                 <td style={{ padding: "8px" }}>{p.average_price.toFixed(2)}</td>
@@ -322,9 +331,72 @@ function WatchlistTab() {
   );
 }
 
+function ChartTab({ ticker, market }: { ticker: string; market: "us" | "india" }) {
+  const [watchlist, setWatchlist] = useState<Record<string, string[]>>({});
+  const [selectedMarket, setSelectedMarket] = useState<"us" | "india">(market);
+  const [selectedTicker, setSelectedTicker] = useState(ticker);
+
+  useEffect(() => {
+    api.watchlist().then(d => setWatchlist(d.watchlist));
+  }, []);
+
+  useEffect(() => {
+    setSelectedTicker(ticker);
+    setSelectedMarket(market);
+  }, [ticker, market]);
+
+  const tickers = watchlist[selectedMarket] ?? [];
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 16 }}>
+        <select
+          value={selectedMarket}
+          onChange={e => {
+            const m = e.target.value as "us" | "india";
+            setSelectedMarket(m);
+            setSelectedTicker("");
+          }}
+          style={{ padding: "4px 8px" }}
+        >
+          <option value="us">US</option>
+          <option value="india">India</option>
+        </select>
+        <select
+          value={selectedTicker}
+          onChange={e => setSelectedTicker(e.target.value)}
+          style={{ padding: "4px 8px", minWidth: 120 }}
+        >
+          <option value="">— select ticker —</option>
+          {tickers.map(t => <option key={t}>{t}</option>)}
+        </select>
+        <input
+          type="text"
+          placeholder="or type symbol…"
+          value={selectedTicker}
+          onChange={e => setSelectedTicker(e.target.value.toUpperCase())}
+          style={{ padding: "4px 8px", background: "#1f2937", border: "1px solid #374151", borderRadius: 4, color: "#f9fafb", width: 120 }}
+        />
+      </div>
+      {selectedTicker
+        ? <TvChart ticker={selectedTicker} market={selectedMarket} height={560} />
+        : <p style={{ color: "#9ca3af" }}>Select a ticker to view the chart.</p>
+      }
+    </div>
+  );
+}
+
 export default function App() {
   const [tab, setTab] = useState<Tab>("signals");
+  const [chartTicker, setChartTicker] = useState("");
+  const [chartMarket, setChartMarket] = useState<"us" | "india">("us");
   const [health, setHealth] = useState<{ status: string; brokers: Record<string, string> } | null>(null);
+
+  const goToChart = (ticker: string, market: "us" | "india") => {
+    setChartTicker(ticker);
+    setChartMarket(market);
+    setTab("chart");
+  };
 
   useEffect(() => {
     api.health().then(setHealth).catch(() => null);
@@ -337,6 +409,7 @@ export default function App() {
     { id: "positions", label: "Positions" },
     { id: "orders", label: "Orders" },
     { id: "watchlist", label: "Watchlist" },
+    { id: "chart", label: "Chart" },
   ];
 
   return (
@@ -378,10 +451,11 @@ export default function App() {
           ))}
         </div>
 
-        {tab === "signals" && <SignalsTab />}
-        {tab === "positions" && <PositionsTab />}
+        {tab === "signals" && <SignalsTab onChart={goToChart} />}
+        {tab === "positions" && <PositionsTab onChart={goToChart} />}
         {tab === "orders" && <OrdersTab />}
         {tab === "watchlist" && <WatchlistTab />}
+        {tab === "chart" && <ChartTab ticker={chartTicker} market={chartMarket} />}
       </div>
     </div>
   );
