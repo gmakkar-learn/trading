@@ -14,6 +14,7 @@ Also exposes:
 from __future__ import annotations
 
 import hmac
+import json
 import logging
 import os
 from datetime import datetime, timezone
@@ -72,10 +73,14 @@ async def receive_webhook(request: Request, secret: str | None = Query(default=N
         _log_alert(state, {"received_at": recv_at, "outcome": "auth_failure", "ip": src_ip})
         raise HTTPException(status_code=403, detail="Invalid webhook secret")
 
-    # 2. Parse
+    # 2. Parse — TradingView sends Content-Type: text/plain, so read raw body and parse manually
     try:
-        payload = await request.json()
+        body = await request.body()
+        payload = json.loads(body)
     except Exception:
+        raw = body.decode("utf-8", errors="replace")[:200] if "body" in dir() else ""
+        logger.warning("TV webhook parse error from %s: %r", src_ip, raw)
+        _log_alert(state, {"received_at": recv_at, "outcome": "parse_error", "raw": raw})
         return {"ok": False, "outcome": "parse_error"}
 
     missing = _REQUIRED_FIELDS - set(payload.keys())
@@ -87,7 +92,9 @@ async def receive_webhook(request: Request, secret: str | None = Query(default=N
     strategy_id = payload.get("strategy_id", "tradingview")
 
     # 3. Stale check
-    if is_stale(payload["timestamp"]):
+    source_cfg    = _load_source_cfg()
+    max_age       = int(source_cfg.get("signal", {}).get("max_age_seconds", 300))
+    if is_stale(payload["timestamp"], max_age_seconds=max_age):
         logger.info("TV webhook discarded stale alert: %s %s", strategy_id, ticker)
         _log_alert(state, {"received_at": recv_at, "strategy_id": strategy_id,
                             "ticker": ticker, "action": payload.get("action"),
@@ -104,7 +111,6 @@ async def receive_webhook(request: Request, secret: str | None = Query(default=N
         return {"ok": True, "outcome": "unknown_exchange"}
 
     # 5. min_score gate
-    source_cfg = _load_source_cfg()
     min_score  = float(source_cfg.get("signal", {}).get("min_score", 60.0))
     score      = float(payload.get("score") or source_cfg.get("signal", {}).get("default_score", 85.0))
     if score < min_score:

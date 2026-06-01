@@ -65,6 +65,7 @@ _RISK_CFG = {
     ("NYSE",   "us"),
     ("ARCA",   "us"),
     ("CBOE",   "us"),
+    ("BATS",   "us"),
     ("nse",    "india"),   # case-insensitive
 ])
 def test_resolve_market_known(exchange, expected):
@@ -78,19 +79,39 @@ def test_resolve_market_unknown():
 # ── is_stale ───────────────────────────────────────────────────────────────────
 
 def test_is_stale_fresh():
-    assert not is_stale(_ts(-10))         # 10 seconds old → fresh
+    assert not is_stale(_ts(-10))                              # 10s old → fresh (default 300s window)
 
 
 def test_is_stale_old():
-    assert is_stale(_ts(-400))            # 400 seconds old → stale
+    assert is_stale(_ts(-400))                                 # 400s old → stale
 
 
 def test_is_stale_future():
-    assert not is_stale(_ts(+30))         # future timestamp → not stale
+    assert not is_stale(_ts(+30))                              # future timestamp → not stale
 
 
 def test_is_stale_bad_format():
-    assert is_stale("not-a-timestamp")    # unparseable → treated as stale
+    assert not is_stale("not-a-timestamp")                     # unparseable → treated as fresh (delivery is the guard)
+
+
+def test_is_stale_unresolved_template():
+    assert not is_stale("{{timenow}}")                         # unresolved TV template → treated as fresh
+
+
+def test_is_stale_empty():
+    assert not is_stale("")                                    # missing timestamp → treated as fresh
+
+
+def test_is_stale_custom_window_fresh():
+    assert not is_stale(_ts(-250), max_age_seconds=360)        # 250s old, 360s window → fresh
+
+
+def test_is_stale_custom_window_stale():
+    assert is_stale(_ts(-400), max_age_seconds=360)            # 400s old, 360s window → stale
+
+
+def test_is_stale_daily_candle_window():
+    assert not is_stale(_ts(-3600), max_age_seconds=90000)     # 1h old, 25h window → fresh
 
 
 # ── build_signal — score handling ─────────────────────────────────────────────

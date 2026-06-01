@@ -13,7 +13,7 @@ from infrastructure.event_bus.events import TradingSignal
 
 _EXCHANGE_MAP: dict[str, str] = {
     "NSE": "india", "BSE": "india",
-    "NASDAQ": "us", "NYSE": "us", "ARCA": "us", "CBOE": "us",
+    "NASDAQ": "us", "NYSE": "us", "ARCA": "us", "CBOE": "us", "BATS": "us",
 }
 
 _DEFAULTS = {
@@ -89,10 +89,22 @@ def build_signal(payload: dict, source_cfg: dict) -> TradingSignal:
 
 
 def is_stale(timestamp_str: str, max_age_seconds: int = 300) -> bool:
-    """Return True if the alert timestamp is older than max_age_seconds."""
+    """Return True if the alert timestamp is older than max_age_seconds.
+
+    Accepts ISO 8601 strings or Unix millisecond strings (Pine Script timenow).
+    Unresolved TradingView template variables (e.g. {{timenow}}) are treated as
+    fresh — the HTTP delivery itself is the best freshness signal in that case.
+    """
+    if not timestamp_str or "{{" in str(timestamp_str):
+        return False  # unresolved template → assume fresh
     try:
+        # ISO 8601: "2026-06-02T00:32:03Z" or "2026-06-02T00:32:03.490Z"
         ts = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-        age = (datetime.now(timezone.utc) - ts).total_seconds()
-        return age > max_age_seconds
-    except Exception:
-        return True  # unparseable timestamp → treat as stale
+    except (ValueError, AttributeError):
+        try:
+            # Unix milliseconds: "1748824323000" (Pine Script timenow)
+            ts = datetime.fromtimestamp(int(timestamp_str) / 1000, tz=timezone.utc)
+        except (ValueError, TypeError):
+            return False  # unparseable → assume fresh, delivery time is the guard
+    age = (datetime.now(timezone.utc) - ts).total_seconds()
+    return age > max_age_seconds

@@ -3,9 +3,10 @@ version: "1.0"
 # Signal thresholds — apply to all TradingView Pine Script strategies.
 # Adding or removing a strategy in TradingView requires no change here.
 signal:
-  default_score: 72    # paper phase: routes every signal to Telegram approval
-                       # raise to 85 for auto-execute when promoting to live
-  min_score:     60    # discard signals below this before they enter the pipeline
+  default_score:    72     # paper phase: routes every signal to Telegram approval
+                           # raise to 85 for auto-execute when promoting to live
+  min_score:        60     # discard signals below this before they enter the pipeline
+  max_age_seconds:  360    # alert staleness window; set >= candle_seconds (e.g. 360 for 5m, 90000 for 1D)
 
 # Execution defaults — overridable per-signal via payload fields.
 # Pine Script can send e.g. "stoploss_pct": 0.08 for volatile strategies.
