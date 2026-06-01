@@ -23,7 +23,8 @@ TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 class SecEdgarFeed:
     """Fetches 8-K filings with item 2.02 from SEC EDGAR for a list of tickers."""
 
-    def __init__(self, user_agent: str | None = None) -> None:
+    def __init__(self, tickers: list[str] | None = None, user_agent: str | None = None) -> None:
+        self._tickers: list[str] = tickers or []
         self._user_agent = user_agent or os.environ.get(
             "SEC_EDGAR_USER_AGENT", "auto-trader-01 contact@example.com"
         )
@@ -161,9 +162,13 @@ class SecEdgarFeed:
 
     async def stream_events(
         self,
-        tickers: list[str],
+        tickers: list[str] | None = None,
         since: date | None = None,
     ) -> AsyncIterator[AnnouncementEvent]:
+        from datetime import timedelta
+        tickers = tickers or self._tickers
+        if since is None:
+            since = date.today() - timedelta(days=30)
         """Yield AnnouncementEvents for all qualifying 8-K filings for the given tickers."""
         async with httpx.AsyncClient() as client:
             for ticker in tickers:

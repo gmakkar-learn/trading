@@ -200,7 +200,7 @@ async def _poll_market(market_id: str) -> None:
 def _create_feed(market_id: str, tickers: list[str]):
     if market_id == "us":
         from agents.strategy_engine.data_feeds.announcement_feed import SecEdgarFeed
-        return SecEdgarFeed(tickers)
+        return SecEdgarFeed(tickers=tickers)
     if market_id == "india":
         from agents.strategy_engine.data_feeds.india_announcement_feed import IndiaAnnouncementFeed
         return IndiaAnnouncementFeed(tickers)
