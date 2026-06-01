@@ -94,7 +94,7 @@ class AuditLogger:
     ) -> list[dict]:
         """Return signals enriched with downstream disposition (REJECT/APPROVE/ORDER)."""
         from infrastructure.database.models.audit_log import AuditLog  # noqa: PLC0415
-        RELEVANT = {"SIGNAL", "REJECT", "APPROVE", "ORDER_ATTEMPT", "ORDER_RESULT"}
+        RELEVANT = {"SIGNAL", "signal_generated", "REJECT", "APPROVE", "ORDER_ATTEMPT", "ORDER_RESULT"}
         try:
             async with self._session_factory() as session:
                 stmt = (
@@ -116,7 +116,7 @@ class AuditLogger:
             sig_id = sig_json.get("signal_id")
             if not sig_id:
                 continue
-            if row.decision == "SIGNAL":
+            if row.decision in ("SIGNAL", "signal_generated"):
                 if sig_id not in signals:
                     signals[sig_id] = {
                         **sig_json,

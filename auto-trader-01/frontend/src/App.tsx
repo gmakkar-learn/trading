@@ -40,6 +40,92 @@ function dispositionBadge(d: string) {
   );
 }
 
+function fmt(n: number | null | undefined, suffix = "") {
+  if (n == null) return "—";
+  return n.toLocaleString() + suffix;
+}
+function fmtPct(n: number | null | undefined) {
+  if (n == null) return "—";
+  return (n > 0 ? "+" : "") + n + "%";
+}
+function fmtM(n: number | null | undefined) {
+  if (n == null) return "—";
+  return "$" + n.toLocaleString() + "M";
+}
+
+function RationaleView({ rationale }: { rationale: string }) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let parsed: any = null;
+  try {
+    const obj = JSON.parse(rationale);
+    if (obj && typeof obj === "object" && ("revenue" in obj || "earnings" in obj)) parsed = obj;
+  } catch {}
+
+  if (!parsed) {
+    return <span style={{ color: "#d1d5db", fontSize: 12, lineHeight: 1.6 }}>{rationale}</span>;
+  }
+
+  const pctColor = (v: number | null | undefined): string =>
+    v == null ? "#9ca3af" : v > 0 ? "#4ade80" : v < 0 ? "#f87171" : "#9ca3af";
+
+  const cell = (label: string, value: string, color?: string) => (
+    <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 110 }}>
+      <span style={{ fontSize: 10, color: "#6b7280", textTransform: "uppercase" as const, letterSpacing: "0.05em" }}>{label}</span>
+      <span style={{ fontSize: 13, color: color ?? "#f9fafb", fontWeight: 600 }}>{value}</span>
+    </div>
+  );
+
+  const rev = parsed.revenue;
+  const earn = parsed.earnings;
+  const mar = parsed.margins;
+  const guid = parsed.guidance;
+  const div = parsed.dividend;
+  const exc = parsed.exceptional_items;
+  const notes: string | undefined = parsed.notes;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
+        {rev?.actual != null     && cell("Revenue",    fmtM(rev.actual))}
+        {rev?.yoy_growth_pct != null && cell("Rev YoY", fmtPct(rev.yoy_growth_pct), pctColor(rev.yoy_growth_pct))}
+        {earn?.eps_actual != null    && cell("EPS",      "$" + earn.eps_actual)}
+        {earn?.eps_yoy_growth_pct != null && cell("EPS YoY", fmtPct(earn.eps_yoy_growth_pct), pctColor(earn.eps_yoy_growth_pct))}
+        {earn?.net_income_actual != null  && cell("Net Income", fmtM(earn.net_income_actual))}
+        {earn?.net_income_yoy_growth_pct != null && cell("NI YoY", fmtPct(earn.net_income_yoy_growth_pct), pctColor(earn.net_income_yoy_growth_pct))}
+      </div>
+      {mar && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
+          {mar.gross_margin_pct != null   && cell("Gross Margin", fmt(mar.gross_margin_pct, "%"))}
+          {mar.operating_margin_pct != null && cell("Op. Margin",  fmt(mar.operating_margin_pct, "%"))}
+          {mar.operating_margin_direction  && cell("Margin Trend", String(mar.operating_margin_direction))}
+        </div>
+      )}
+      {(guid || div) && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
+          {guid?.provided && cell("Guidance",
+            guid.direction ? String(guid.direction)
+              : guid.revenue_next_quarter ? "Next Q Rev: " + fmtM(guid.revenue_next_quarter)
+              : "provided")}
+          {div?.declared && cell("Dividend",
+            div.change
+              ? String(div.change) + (div.amount ? " → $" + div.amount : "")
+              : "declared")}
+        </div>
+      )}
+      {exc?.present && (
+        <div style={{ background: "#451a03", border: "1px solid #92400e", borderRadius: 6, padding: "6px 10px", fontSize: 12, color: "#fcd34d" }}>
+          ⚠ Exceptional items ({fmtM(exc.impact_millions)}): {String(exc.description ?? "")}
+        </div>
+      )}
+      {notes && (
+        <div style={{ fontSize: 12, color: "#9ca3af", lineHeight: 1.6, borderTop: "1px solid #1f2937", paddingTop: 8 }}>
+          {notes}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SignalsTab({ onChart }: { onChart: (ticker: string, market: "us" | "india") => void }) {
   const [signals, setSignals] = useState<Signal[]>([]);
   const [market, setMarket] = useState("");
@@ -118,8 +204,10 @@ function SignalsTab({ onChart }: { onChart: (ticker: string, market: "us" | "ind
                   </tr>
                   {isOpen && (
                     <tr key={`${s.signal_id}-rationale`} style={{ background: "#0f172a" }}>
-                      <td colSpan={8} style={{ padding: "10px 16px", color: "#d1d5db", fontSize: 12, lineHeight: 1.6 }}>
-                        {s.rationale || <em style={{ color: "#6b7280" }}>No rationale</em>}
+                      <td colSpan={8} style={{ padding: "12px 16px" }}>
+                        {s.rationale
+                          ? <RationaleView rationale={s.rationale} />
+                          : <em style={{ color: "#6b7280", fontSize: 12 }}>No rationale</em>}
                       </td>
                     </tr>
                   )}
