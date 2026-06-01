@@ -21,11 +21,17 @@ export interface Signal {
   ticker: string;
   market_id: string;
   strategy_type: string;
+  strategy_id: string;
   composite_score: number;
   recommended_action: string;
   confidence: string;
   rationale: string;
   created_at: string;
+  received_at: string;
+  // disposition fields
+  disposition: "received" | "approved" | "rejected" | "order_placed";
+  rejection_reason: string | null;
+  order_id: string | null;
 }
 
 export interface Position {

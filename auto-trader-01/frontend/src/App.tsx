@@ -24,16 +24,33 @@ function confBadge(c: string) {
   );
 }
 
+const DISPOSITION_STYLE: Record<string, { color: string; label: string }> = {
+  order_placed: { color: "#16a34a", label: "ORDER PLACED" },
+  approved:     { color: "#d97706", label: "PENDING ORDER" },
+  rejected:     { color: "#dc2626", label: "REJECTED" },
+  received:     { color: "#6b7280", label: "PROCESSING" },
+};
+
+function dispositionBadge(d: string) {
+  const s = DISPOSITION_STYLE[d] ?? { color: "#6b7280", label: d.toUpperCase() };
+  return (
+    <span style={{ background: s.color, color: "#fff", padding: "2px 7px", borderRadius: 4, fontSize: 11, fontWeight: 600 }}>
+      {s.label}
+    </span>
+  );
+}
+
 function SignalsTab({ onChart }: { onChart: (ticker: string, market: "us" | "india") => void }) {
   const [signals, setSignals] = useState<Signal[]>([]);
   const [market, setMarket] = useState("");
   const [loading, setLoading] = useState(false);
+  const [expanded, setExpanded] = useState<string | null>(null);
 
   const load = async () => {
     setLoading(true);
     try {
       const data = await api.signals(market || undefined);
-      setSignals(data.signals.slice().reverse());
+      setSignals(data.signals);
     } finally {
       setLoading(false);
     }
@@ -52,30 +69,66 @@ function SignalsTab({ onChart }: { onChart: (ticker: string, market: "us" | "ind
         <button onClick={load} disabled={loading}>{loading ? "Loading…" : "Refresh"}</button>
       </div>
       {signals.length === 0 && !loading && <p style={{ color: "#9ca3af" }}>No signals yet.</p>}
-      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        {signals.map(s => (
-          <div key={s.signal_id} style={{ border: "1px solid #374151", borderRadius: 8, padding: 16, background: "#111827" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <span
-                style={{ fontWeight: 700, fontSize: 18, cursor: "pointer" }}
-                onClick={() => onChart(s.ticker, s.market_id as "us" | "india")}
-                title="View chart"
-              >
-                {s.ticker} <span style={{ fontSize: 12, color: "#9ca3af" }}>{s.market_id.toUpperCase()}</span>
-              </span>
-              <div style={{ display: "flex", gap: 6 }}>
-                {badge(s.recommended_action)}
-                {confBadge(s.confidence)}
-              </div>
-            </div>
-            <div style={{ color: "#9ca3af", fontSize: 13, marginBottom: 6 }}>
-              Score: <strong style={{ color: "#f9fafb" }}>{s.composite_score.toFixed(1)}</strong>
-              {" · "}{s.strategy_type}{" · "}{new Date(s.created_at).toLocaleString()}
-            </div>
-            <div style={{ fontSize: 13, color: "#d1d5db", lineHeight: 1.5 }}>{s.rationale}</div>
-          </div>
-        ))}
-      </div>
+      {signals.length > 0 && (
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead>
+            <tr style={{ color: "#9ca3af", borderBottom: "1px solid #374151", textAlign: "left" }}>
+              {["Time", "Ticker", "Strategy", "Action", "Score", "Conf", "Disposition", "Details"].map(h => (
+                <th key={h} style={{ padding: "6px 8px", fontWeight: 500 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {signals.map(s => {
+              const ts = s.received_at || s.created_at;
+              const isOpen = expanded === s.signal_id;
+              return (
+                <>
+                  <tr
+                    key={s.signal_id}
+                    style={{ borderBottom: "1px solid #1f2937", cursor: "pointer" }}
+                    onClick={() => setExpanded(isOpen ? null : s.signal_id)}
+                    title="Click to expand rationale"
+                  >
+                    <td style={{ padding: "8px", color: "#6b7280", fontSize: 11, whiteSpace: "nowrap" }}>
+                      {ts ? new Date(ts).toLocaleString() : "—"}
+                    </td>
+                    <td style={{ padding: "8px", fontWeight: 600 }}>
+                      <span
+                        style={{ cursor: "pointer", textDecoration: "underline dotted" }}
+                        onClick={e => { e.stopPropagation(); onChart(s.ticker, s.market_id as "us" | "india"); }}
+                        title="View chart"
+                      >
+                        {s.ticker}
+                      </span>
+                      <span style={{ fontSize: 11, color: "#9ca3af", marginLeft: 4 }}>{s.market_id.toUpperCase()}</span>
+                    </td>
+                    <td style={{ padding: "8px", color: "#9ca3af" }}>{s.strategy_id || s.strategy_type}</td>
+                    <td style={{ padding: "8px" }}>{badge(s.recommended_action)}</td>
+                    <td style={{ padding: "8px" }}>{s.composite_score?.toFixed(1) ?? "—"}</td>
+                    <td style={{ padding: "8px" }}>{confBadge(s.confidence)}</td>
+                    <td style={{ padding: "8px" }}>{dispositionBadge(s.disposition ?? "received")}</td>
+                    <td style={{ padding: "8px", color: "#9ca3af", fontSize: 12, maxWidth: 220 }}>
+                      {s.disposition === "rejected" && s.rejection_reason
+                        ? <span style={{ color: "#f87171" }}>{s.rejection_reason}</span>
+                        : s.order_id
+                        ? <span style={{ color: "#6ee7b7", fontFamily: "monospace" }}>{s.order_id}</span>
+                        : "—"}
+                    </td>
+                  </tr>
+                  {isOpen && (
+                    <tr key={`${s.signal_id}-rationale`} style={{ background: "#0f172a" }}>
+                      <td colSpan={8} style={{ padding: "10px 16px", color: "#d1d5db", fontSize: 12, lineHeight: 1.6 }}>
+                        {s.rationale || <em style={{ color: "#6b7280" }}>No rationale</em>}
+                      </td>
+                    </tr>
+                  )}
+                </>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
