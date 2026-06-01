@@ -66,13 +66,6 @@ class StrategyEngine:
 
     async def _emit(self, signal: TradingSignal) -> None:
         self._signal_cache.put(signal)
-        await self._audit.log(
-            "signal_generated",
-            market_id=signal.market_id,
-            ticker=signal.ticker,
-            reason=f"{signal.strategy_id} score={signal.composite_score:.1f} action={signal.recommended_action}",
-            signal=signal,
-        )
         await self._bus.publish(TradingSignalEvent(signal=signal))
         logger.info(
             "Signal emitted: %s %s score=%.1f action=%s confidence=%s",

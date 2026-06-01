@@ -39,6 +39,7 @@ class SecEdgarFeed:
             "Host": "www.sec.gov",
         }
         self._ticker_to_cik: dict[str, str] = {}
+        self._seen_filings: set[str] = set()  # accession numbers already emitted this session
         # Stay comfortably under SEC's 10 req/s limit
         self._semaphore = asyncio.Semaphore(5)
 
@@ -177,6 +178,10 @@ class SecEdgarFeed:
                     doc_url = await self.get_press_release_url(
                         f["cik_int"], f["acc_clean"], f["accession"], client
                     )
+                    if f["accession"] in self._seen_filings:
+                        continue
+                    self._seen_filings.add(f["accession"])
+
                     if not doc_url:
                         # Fall back to the primary 8-K document
                         doc_url = (
