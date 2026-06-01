@@ -452,7 +452,10 @@ export default function App() {
         {tab === "positions" && <PositionsTab onChart={goToChart} />}
         {tab === "orders" && <OrdersTab />}
         {tab === "watchlist" && <WatchlistTab />}
-        {tab === "chart" && <ChartTab ticker={chartTicker} market={chartMarket} onTickerChange={setChartTicker} onMarketChange={setChartMarket} />}
+        {/* Keep ChartTab mounted at all times so the TV widget and drawing tools survive tab switches */}
+        <div style={{ display: tab === "chart" ? "block" : "none" }}>
+          <ChartTab ticker={chartTicker} market={chartMarket} onTickerChange={setChartTicker} onMarketChange={setChartMarket} />
+        </div>
       </div>
     </div>
   );
