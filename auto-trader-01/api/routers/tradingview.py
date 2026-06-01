@@ -120,24 +120,8 @@ async def receive_webhook(request: Request, secret: str | None = Query(default=N
 
     signal = build_signal(payload, source_cfg)
 
-    # 7. Publish
+    # 7. Publish — _record_signal in main.py handles signal_history + audit for all TradingSignalEvents
     await state.event_bus.publish(TradingSignalEvent(signal=signal))
-
-    # 8. Record in signal history (shared with /api/signals endpoint)
-    import dataclasses
-    d = dataclasses.asdict(signal)
-    d["created_at"] = signal.created_at.isoformat()
-    state.signal_history.append(d)
-    if len(state.signal_history) > 200:
-        state.signal_history.pop(0)
-
-    if state.audit:
-        await state.audit.log(
-            decision="SIGNAL",
-            market_id=signal.market_id,
-            ticker=signal.ticker,
-            signal=signal,
-        )
 
     _log_alert(state, {
         "received_at": recv_at,

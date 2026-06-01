@@ -46,22 +46,23 @@ class TelegramSender:
         await self._post("sendMessage", {
             "chat_id": self._chat_id,
             "text": message,
-            "parse_mode": "Markdown",
+            "parse_mode": "HTML",
         })
 
     async def send_approval_request(self, req: ApprovalRequest) -> None:
         """Send an approval request with Approve/Reject inline buttons."""
         currency = "₹" if req.market_id == "india" else "$"
         expires_str = req.expires_at.strftime("%H:%M UTC")
+        rationale = req.rationale[:300].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         text = (
-            f"*Trade Approval Required*\n\n"
-            f"Ticker: `{req.ticker}` ({req.market_id.upper()})\n"
-            f"Action: *{req.side}*\n"
+            f"<b>Trade Approval Required</b>\n\n"
+            f"Ticker: <code>{req.ticker}</code> ({req.market_id.upper()})\n"
+            f"Action: <b>{req.side}</b>\n"
             f"Quantity: {req.quantity}\n"
             f"Limit: {currency}{req.limit_price:.2f}\n"
             f"Score: {req.composite_score:.1f}/100\n\n"
-            f"Rationale:\n_{req.rationale[:300]}_\n\n"
-            f"_Expires at {expires_str} — no action = auto-reject_"
+            f"Rationale:\n<i>{rationale}</i>\n\n"
+            f"<i>Expires at {expires_str} — no action = auto-reject</i>"
         )
         keyboard = {
             "inline_keyboard": [[
@@ -72,7 +73,7 @@ class TelegramSender:
         await self._post("sendMessage", {
             "chat_id": self._chat_id,
             "text": text,
-            "parse_mode": "Markdown",
+            "parse_mode": "HTML",
             "reply_markup": keyboard,
         })
         logger.info("Approval request sent for %s [%s]", req.ticker, req.request_id)
