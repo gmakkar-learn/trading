@@ -12,6 +12,8 @@ from typing import Callable
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest, GetOrdersRequest
 from alpaca.trading.enums import OrderSide, TimeInForce, OrderType, QueryOrderStatus
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests import StockLatestTradeRequest, StockLatestQuoteRequest
 
 from infrastructure.broker.base import (
     BrokerAdapter, BrokerOrder, Position, Holding, Quote, OrderStatus, OrderUpdate,
@@ -34,6 +36,8 @@ class AlpacaAdapter(BrokerAdapter):
         if base_url and base_url.endswith("/v2"):
             base_url = base_url[:-3]
         self._client = TradingClient(api_key, api_secret, paper=paper, url_override=base_url)
+        # Data client uses the same keys; feed is market-independent
+        self._data = StockHistoricalDataClient(api_key, api_secret)
         env = "paper" if paper else "live"
         logger.info("AlpacaAdapter initialised (%s, url=%s)", env, base_url or "default")
 
@@ -126,20 +130,22 @@ class AlpacaAdapter(BrokerAdapter):
 
     async def get_quote(self, ticker: str) -> Quote:
         try:
-            from alpaca.data.historical import StockHistoricalDataClient
-            from alpaca.data.requests import StockLatestTradeRequest
-            # Use last trade as quote approximation
-            snap = self._client.get_asset(ticker)
+            trade = self._data.get_stock_latest_trade(
+                StockLatestTradeRequest(symbol_or_symbols=ticker)
+            )[ticker]
+            quote = self._data.get_stock_latest_quote(
+                StockLatestQuoteRequest(symbol_or_symbols=ticker)
+            )[ticker]
             return Quote(
                 ticker=ticker,
-                last_price=0.0,
-                bid=0.0,
-                ask=0.0,
-                volume=0.0,
-                timestamp=datetime.utcnow(),
+                last_price=float(trade.price),
+                bid=float(quote.bid_price),
+                ask=float(quote.ask_price),
+                volume=float(trade.size),
+                timestamp=trade.timestamp,
             )
         except Exception as exc:
-            logger.error("Alpaca get_quote failed: %s", exc)
+            logger.error("Alpaca get_quote failed for %s: %s", ticker, exc)
             raise
 
     async def subscribe_ticks(self, tickers: list[str], callback: Callable) -> None:
