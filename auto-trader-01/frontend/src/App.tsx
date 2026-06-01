@@ -331,31 +331,28 @@ function WatchlistTab() {
   );
 }
 
-function ChartTab({ ticker, market }: { ticker: string; market: "us" | "india" }) {
+function ChartTab({ ticker, market, onTickerChange, onMarketChange }: {
+  ticker: string;
+  market: "us" | "india";
+  onTickerChange: (t: string) => void;
+  onMarketChange: (m: "us" | "india") => void;
+}) {
   const [watchlist, setWatchlist] = useState<Record<string, string[]>>({});
-  const [selectedMarket, setSelectedMarket] = useState<"us" | "india">(market);
-  const [selectedTicker, setSelectedTicker] = useState(ticker);
 
   useEffect(() => {
     api.watchlist().then(d => setWatchlist(d.watchlist));
   }, []);
 
-  useEffect(() => {
-    setSelectedTicker(ticker);
-    setSelectedMarket(market);
-  }, [ticker, market]);
-
-  const tickers = watchlist[selectedMarket] ?? [];
+  const tickers = watchlist[market] ?? [];
 
   return (
     <div>
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 16 }}>
         <select
-          value={selectedMarket}
+          value={market}
           onChange={e => {
-            const m = e.target.value as "us" | "india";
-            setSelectedMarket(m);
-            setSelectedTicker("");
+            onMarketChange(e.target.value as "us" | "india");
+            onTickerChange("");
           }}
           style={{ padding: "4px 8px" }}
         >
@@ -363,8 +360,8 @@ function ChartTab({ ticker, market }: { ticker: string; market: "us" | "india" }
           <option value="india">India</option>
         </select>
         <select
-          value={selectedTicker}
-          onChange={e => setSelectedTicker(e.target.value)}
+          value={ticker}
+          onChange={e => onTickerChange(e.target.value)}
           style={{ padding: "4px 8px", minWidth: 120 }}
         >
           <option value="">— select ticker —</option>
@@ -373,13 +370,13 @@ function ChartTab({ ticker, market }: { ticker: string; market: "us" | "india" }
         <input
           type="text"
           placeholder="or type symbol…"
-          value={selectedTicker}
-          onChange={e => setSelectedTicker(e.target.value.toUpperCase())}
+          value={ticker}
+          onChange={e => onTickerChange(e.target.value.toUpperCase())}
           style={{ padding: "4px 8px", background: "#1f2937", border: "1px solid #374151", borderRadius: 4, color: "#f9fafb", width: 120 }}
         />
       </div>
-      {selectedTicker
-        ? <TvChart ticker={selectedTicker} market={selectedMarket} height={560} />
+      {ticker
+        ? <TvChart ticker={ticker} market={market} height={560} />
         : <p style={{ color: "#9ca3af" }}>Select a ticker to view the chart.</p>
       }
     </div>
@@ -455,7 +452,7 @@ export default function App() {
         {tab === "positions" && <PositionsTab onChart={goToChart} />}
         {tab === "orders" && <OrdersTab />}
         {tab === "watchlist" && <WatchlistTab />}
-        {tab === "chart" && <ChartTab ticker={chartTicker} market={chartMarket} />}
+        {tab === "chart" && <ChartTab ticker={chartTicker} market={chartMarket} onTickerChange={setChartTicker} onMarketChange={setChartMarket} />}
       </div>
     </div>
   );
