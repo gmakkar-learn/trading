@@ -34,29 +34,38 @@ load_dotenv()
 
 ENV_FILE = Path(__file__).parent.parent / ".env"
 
-_AUTH_BASE = "https://api.upstox.com/v2/login/authorization/dialog"
-_TOKEN_URL = "https://api.upstox.com/v2/login/authorization/token"
+_AUTH_BASE = "https://api-sandbox.upstox.com/v2/login/authorization/dialog"
+_TOKEN_URL = "https://api-sandbox.upstox.com/v2/login/authorization/token"
 
 
 def main() -> None:
-    api_key = os.environ.get("UPSTOX_API_KEY")
-    api_secret = os.environ.get("UPSTOX_API_SECRET")
-    redirect_uri = os.environ.get("UPSTOX_REDIRECT_URI", "http://localhost:8080/callback")
+    api_key = (os.environ.get("UPSTOX_API_KEY") or "").strip()
+    api_secret = (os.environ.get("UPSTOX_API_SECRET") or "").strip()
+    redirect_uri = (os.environ.get("UPSTOX_REDIRECT_URI") or "http://localhost:8080/callback").strip()
 
     if not api_key or not api_secret:
         print("ERROR: UPSTOX_API_KEY and UPSTOX_API_SECRET must be set in .env")
         sys.exit(1)
 
-    auth_url = (
-        f"{_AUTH_BASE}"
-        f"?response_type=code"
-        f"&client_id={api_key}"
-        f"&redirect_uri={urllib.parse.quote(redirect_uri, safe='')}"
-    )
+    # Upstox accepts redirect_uri either raw or percent-encoded in the auth URL.
+    # Build both forms so the user can try manually if the browser open fails.
+    query_encoded = urllib.parse.urlencode({
+        "response_type": "code",
+        "client_id": api_key,
+        "redirect_uri": redirect_uri,
+    })
+    query_raw = f"response_type=code&client_id={api_key}&redirect_uri={redirect_uri}"
+    auth_url = f"{_AUTH_BASE}?{query_encoded}"
+    auth_url_raw = f"{_AUTH_BASE}?{query_raw}"
 
     print("\n=== Upstox OAuth2 Auth Flow ===\n")
-    print(f"Opening browser to:\n  {auth_url}\n")
-    print("If the browser doesn't open, paste the URL manually.\n")
+    print(f"[DEBUG] client_id    : {repr(api_key)}")
+    print(f"[DEBUG] client_id len: {len(api_key)}")
+    print(f"[DEBUG] client_id hex: {api_key.encode().hex()}")
+    print(f"[DEBUG] redirect_uri : {repr(redirect_uri)}")
+    print(f"\n[URL 1 - encoded redirect_uri]:\n  {auth_url}")
+    print(f"\n[URL 2 - raw redirect_uri (try this if URL 1 gives UDAPI100068)]:\n  {auth_url_raw}\n")
+    print("Opening browser with URL 1. If it shows UDAPI100068, paste URL 2 manually.\n")
     webbrowser.open(auth_url)
 
     redirect_url = input("After login + 2FA, paste the full redirect URL here:\n> ").strip()
@@ -70,22 +79,28 @@ def main() -> None:
         sys.exit(1)
 
     print(f"\nExchanging auth code for access token...")
+    print(f"\n[DEBUG] Values being sent:")
+    print(f"  token_url   : {_TOKEN_URL}")
+    print(f"  client_id   : {repr(api_key)}")
+    print(f"  redirect_uri: {repr(redirect_uri)}")
+    print(f"  code        : {repr(auth_code[:20])}...")
 
+    payload = {
+        "code": auth_code,
+        "client_id": api_key,
+        "client_secret": api_secret,
+        "redirect_uri": redirect_uri,
+        "grant_type": "authorization_code",
+    }
     resp = httpx.post(
         _TOKEN_URL,
-        data={
-            "code": auth_code,
-            "client_id": api_key,
-            "client_secret": api_secret,
-            "redirect_uri": redirect_uri,
-            "grant_type": "authorization_code",
-        },
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        data=payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
         timeout=30,
     )
 
     if resp.status_code != 200:
-        print(f"ERROR: Token exchange failed ({resp.status_code}):\n{resp.text}")
+        print(f"\nERROR: Token exchange failed ({resp.status_code}):\n{resp.text}")
         sys.exit(1)
 
     data = resp.json()
