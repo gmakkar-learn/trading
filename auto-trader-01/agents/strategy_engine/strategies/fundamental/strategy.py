@@ -74,7 +74,7 @@ class FundamentalStrategy(BaseStrategy):
             composite_score=scored.composite_score,
             recommended_action=scored.action,
             confidence=scored.confidence,
-            rationale=result_doc.raw_claude_response[:2000],
+            rationale=result_doc.raw_claude_response,
             context={**scored.context, **price_ctx},
         )
 

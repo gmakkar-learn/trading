@@ -56,10 +56,25 @@ function fmtM(n: number | null | undefined) {
 function RationaleView({ rationale }: { rationale: string }) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let parsed: any = null;
+  let preamble = "";
   try {
     const obj = JSON.parse(rationale);
     if (obj && typeof obj === "object" && ("revenue" in obj || "earnings" in obj)) parsed = obj;
   } catch {}
+
+  if (!parsed) {
+    // Try to extract an embedded JSON object from within the text
+    const jsonStart = rationale.indexOf('{"');
+    if (jsonStart > 0) {
+      try {
+        const obj = JSON.parse(rationale.slice(jsonStart));
+        if (obj && typeof obj === "object" && ("revenue" in obj || "earnings" in obj)) {
+          parsed = obj;
+          preamble = rationale.slice(0, jsonStart).trim();
+        }
+      } catch {}
+    }
+  }
 
   if (!parsed) {
     return <span style={{ color: "#d1d5db", fontSize: 12, lineHeight: 1.6 }}>{rationale}</span>;
@@ -85,6 +100,11 @@ function RationaleView({ rationale }: { rationale: string }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {preamble && (
+        <div style={{ fontSize: 11, color: "#9ca3af", lineHeight: 1.6, borderLeft: "2px solid #374151", paddingLeft: 8, whiteSpace: "pre-wrap" }}>
+          {preamble}
+        </div>
+      )}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
         {rev?.actual != null     && cell("Revenue",    fmtM(rev.actual))}
         {rev?.yoy_growth_pct != null && cell("Rev YoY", fmtPct(rev.yoy_growth_pct), pctColor(rev.yoy_growth_pct))}
