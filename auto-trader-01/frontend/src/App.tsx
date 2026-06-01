@@ -158,13 +158,13 @@ function SignalsTab({ onChart }: { onChart: (ticker: string, market: "us" | "ind
       {signals.length > 0 && (
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
-            <tr style={{ color: "#9ca3af", borderBottom: "1px solid #374151", textAlign: "left" }}>
+            <tr style={{ color: "#9ca3af", borderBottom: "1px solid #374151" }}>
               {["Time", "Ticker", "Strategy", "Action", "Score", "Conf", "Disposition", "Details"].map(h => (
-                <th key={h} style={{ padding: "6px 8px", fontWeight: 500 }}>{h}</th>
+                <th key={h} style={{ padding: "6px 8px", fontWeight: 500, textAlign: "left" }}>{h}</th>
               ))}
             </tr>
           </thead>
-          <tbody>
+          <tbody style={{ textAlign: "left" }}>
             {signals.map(s => {
               const ts = s.received_at || s.created_at;
               const isOpen = expanded === s.signal_id;
