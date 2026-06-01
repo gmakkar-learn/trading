@@ -12,3 +12,15 @@ sessions:
   allow_preopen: false
   allow_continuous: true
   allow_closing: false
+
+# Score-based position sizing — applied as a multiplier on max_order_size.
+# Tiers are evaluated highest-first; first match wins.
+# Signals below the lowest min_score are discarded before reaching here.
+position_sizing:
+  score_tiers:
+    - min_score: 85
+      size_pct:  1.00    # full position
+    - min_score: 70
+      size_pct:  0.60    # 60% position
+    - min_score: 60
+      size_pct:  0.30    # 30% position (also routed to Telegram approval)

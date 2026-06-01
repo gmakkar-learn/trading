@@ -14,3 +14,9 @@ active_strategies:
     enabled: false
     markets: [india]
     config_file: strategies/hybrid.yaml
+
+  - id: tradingview
+    type: webhook
+    enabled: true
+    markets: [us, india]
+    config_file: strategies/tradingview.yaml

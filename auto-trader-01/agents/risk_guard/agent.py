@@ -175,13 +175,14 @@ class RiskGuardAgent:
         return None
 
     def _build_proposal(self, signal: TradingSignal) -> OrderProposal:
-        # Price comes from signal context if available (enricher populated it)
         current_price = signal.context.get("last_price", 0.0)
-        quantity = self._calculate_quantity(current_price, signal.market_id) if current_price > 0 else 1
+        quantity = self._calculate_quantity(current_price, signal.market_id, signal.composite_score) if current_price > 0 else 1
 
-        # Stoploss: -5% from entry; target: +10%
-        stoploss = round(current_price * 0.95, 2) if current_price > 0 else 0.0
-        target = round(current_price * 1.10, 2) if current_price > 0 else 0.0
+        # Execution params from signal context (set by TV adapter) or fall back to defaults
+        stoploss_pct = float(signal.context.get("stoploss_pct", 0.05))
+        target_pct   = float(signal.context.get("target_pct",   0.10))
+        stoploss = round(current_price * (1 - stoploss_pct), 2) if current_price > 0 else 0.0
+        target   = round(current_price * (1 + target_pct),   2) if current_price > 0 else 0.0
 
         return OrderProposal(
             signal_id=signal.signal_id,
@@ -196,17 +197,21 @@ class RiskGuardAgent:
             rationale=signal.rationale,
         )
 
-    def _calculate_quantity(self, price: float, market_id: str) -> int:
-        """Size each position as a fixed fraction of the cap."""
+    def _calculate_quantity(self, price: float, market_id: str, score: float = 85.0) -> int:
+        """Size position using score tiers from risk config."""
         if price <= 0:
             return 1
-        limits = self._risk.get("position_limits", {})
-        if market_id == "india":
-            cap = limits.get("max_order_size_inr", 500_000)
-        else:
-            cap = limits.get("max_order_size_usd", 5_000)
-        # Use half the cap per position (conservative for paper trading)
-        qty = max(1, int((cap * 0.5) / price))
-        return qty
+        limits   = self._risk.get("position_limits", {})
+        cap      = limits.get("max_order_size_inr", 500_000) if market_id == "india" else limits.get("max_order_size_usd", 5_000)
+        size_pct = self._score_to_size_pct(score)
+        return max(1, int((cap * size_pct) / price))
+
+    def _score_to_size_pct(self, score: float) -> float:
+        """Return position size fraction for the given composite score."""
+        tiers = self._risk.get("position_sizing", {}).get("score_tiers", [])
+        for tier in sorted(tiers, key=lambda t: t["min_score"], reverse=True):
+            if score >= tier["min_score"]:
+                return float(tier["size_pct"])
+        return 0.5  # fallback: half position (pre-tier behaviour)
 
 
