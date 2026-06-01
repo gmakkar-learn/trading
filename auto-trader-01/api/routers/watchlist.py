@@ -1,6 +1,8 @@
 """Watchlist API — read and live-edit the per-market ticker lists."""
 from __future__ import annotations
 
+import asyncio
+import logging
 from pathlib import Path
 
 import yaml
@@ -8,6 +10,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from api.state import get_state
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/watchlist", tags=["watchlist"])
 
@@ -71,7 +75,11 @@ async def add_ticker(market_id: str, body: TickerBody):
     # Propagate to live feeds so the next poll includes the new ticker
     _sync_feeds(state, market_id)
 
+    # Immediately scan the new ticker without waiting for the next scheduled poll
+    asyncio.create_task(_immediate_check(market_id, ticker))
+
     return {"ok": True, "ticker": ticker, "market_id": market_id,
+            "scanning": True,
             "watchlist": state.watchlist_provider._cache.get(market_id, [])}
 
 
@@ -104,3 +112,27 @@ def _sync_feeds(state, market_id: str) -> None:
     candle_feed = state.candle_feeds.get(market_id)
     if candle_feed is not None and hasattr(candle_feed, "_tickers"):
         candle_feed._tickers = list(tickers)
+
+
+async def _immediate_check(market_id: str, ticker: str) -> None:
+    """Run announcement + candle scan for a single ticker immediately."""
+    state = get_state()
+    engine = state.engines.get(market_id)
+    feed = state.feeds.get(market_id)
+    candle_feed = state.candle_feeds.get(market_id)
+
+    logger.info("Immediate check triggered for %s on %s", ticker, market_id)
+
+    if engine and feed:
+        try:
+            async for event in feed.stream_events(tickers=[ticker]):
+                await engine.handle_announcement(event)
+        except Exception as exc:
+            logger.error("Immediate announcement check failed for %s: %s", ticker, exc)
+
+    if engine and candle_feed:
+        try:
+            async for event in candle_feed.stream_events(tickers=[ticker]):
+                await engine.handle_candle(event)
+        except Exception as exc:
+            logger.error("Immediate candle check failed for %s: %s", ticker, exc)

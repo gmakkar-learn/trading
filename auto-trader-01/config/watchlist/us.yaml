@@ -12,5 +12,6 @@ sources:
   - JPM
   - JNJ
   - NFLX
+  - TSM
   type: static
 version: '1.0'
