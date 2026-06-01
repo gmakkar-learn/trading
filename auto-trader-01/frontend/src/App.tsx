@@ -448,22 +448,111 @@ function OrdersTab() {
 
 function WatchlistTab() {
   const [data, setData] = useState<Record<string, string[]>>({});
+  const [newTicker, setNewTicker] = useState("");
+  const [newMarket, setNewMarket] = useState("us");
+  const [adding, setAdding] = useState(false);
+  const [removing, setRemoving] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    api.watchlist().then(d => setData(d.watchlist));
-  }, []);
+  const load = () => api.watchlist().then(d => setData(d.watchlist));
+  useEffect(() => { load(); }, []);
+
+  const handleAdd = async () => {
+    const t = newTicker.trim().toUpperCase();
+    if (!t) return;
+    setAdding(true);
+    setError(null);
+    try {
+      const res = await api.addTicker(newMarket, t);
+      setData(prev => ({ ...prev, [newMarket]: res.watchlist }));
+      setNewTicker("");
+    } catch (e: unknown) {
+      setError((e as Error).message);
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const handleRemove = async (market: string, ticker: string) => {
+    setRemoving(`${market}:${ticker}`);
+    setError(null);
+    try {
+      const res = await api.removeTicker(market, ticker);
+      setData(prev => ({ ...prev, [market]: res.watchlist }));
+    } catch (e: unknown) {
+      setError((e as Error).message);
+    } finally {
+      setRemoving(null);
+    }
+  };
 
   return (
     <div>
+      {/* Add ticker form */}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 24, flexWrap: "wrap" }}>
+        <select
+          value={newMarket}
+          onChange={e => setNewMarket(e.target.value)}
+          style={{ padding: "6px 10px", background: "#1f2937", border: "1px solid #374151", borderRadius: 6, color: "#f9fafb" }}
+        >
+          <option value="us">US</option>
+          <option value="india">India</option>
+        </select>
+        <input
+          value={newTicker}
+          onChange={e => setNewTicker(e.target.value.toUpperCase())}
+          onKeyDown={e => e.key === "Enter" && handleAdd()}
+          placeholder="Ticker symbol (e.g. AAPL)"
+          style={{ padding: "6px 10px", background: "#1f2937", border: "1px solid #374151", borderRadius: 6, color: "#f9fafb", width: 200 }}
+        />
+        <button
+          onClick={handleAdd}
+          disabled={adding || !newTicker.trim()}
+          style={{ padding: "6px 16px", background: "#2563eb", border: "none", borderRadius: 6, color: "#fff", cursor: "pointer", fontWeight: 600 }}
+        >
+          {adding ? "Adding…" : "+ Add"}
+        </button>
+        {error && <span style={{ color: "#f87171", fontSize: 13 }}>{error}</span>}
+      </div>
+
+      {/* Per-market ticker lists */}
       {Object.entries(data).map(([market, tickers]) => (
-        <div key={market} style={{ marginBottom: 24 }}>
-          <h3 style={{ color: "#9ca3af", marginBottom: 8, textTransform: "uppercase", fontSize: 13, letterSpacing: 1 }}>{market}</h3>
+        <div key={market} style={{ marginBottom: 28 }}>
+          <h3 style={{ color: "#9ca3af", marginBottom: 10, textTransform: "uppercase" as const, fontSize: 13, letterSpacing: 1, margin: "0 0 10px" }}>
+            {market} <span style={{ color: "#4b5563", fontWeight: 400 }}>({tickers.length})</span>
+          </h3>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {tickers.map(t => (
-              <span key={t} style={{ background: "#1f2937", border: "1px solid #374151", borderRadius: 6, padding: "4px 12px", fontSize: 14 }}>
-                {t}
-              </span>
-            ))}
+            {tickers.map(t => {
+              const key = `${market}:${t}`;
+              const isRemoving = removing === key;
+              return (
+                <div key={t} style={{
+                  display: "flex", alignItems: "center", gap: 4,
+                  background: "#1f2937", border: "1px solid #374151",
+                  borderRadius: 6, padding: "4px 6px 4px 12px", fontSize: 14,
+                  opacity: isRemoving ? 0.5 : 1,
+                }}>
+                  <span>{t}</span>
+                  <button
+                    onClick={() => handleRemove(market, t)}
+                    disabled={isRemoving}
+                    title={`Remove ${t}`}
+                    style={{
+                      background: "none", border: "none", color: "#6b7280",
+                      cursor: "pointer", fontSize: 16, lineHeight: 1,
+                      padding: "0 2px", borderRadius: 3,
+                    }}
+                    onMouseEnter={e => (e.currentTarget.style.color = "#ef4444")}
+                    onMouseLeave={e => (e.currentTarget.style.color = "#6b7280")}
+                  >
+                    ×
+                  </button>
+                </div>
+              );
+            })}
+            {tickers.length === 0 && (
+              <span style={{ color: "#4b5563", fontSize: 13 }}>No tickers — add one above</span>
+            )}
           </div>
         </div>
       ))}

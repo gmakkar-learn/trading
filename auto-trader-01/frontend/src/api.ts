@@ -85,6 +85,11 @@ export const api = {
     get<{ signals: Signal[] }>(`/api/signals${market ? `?market=${market}` : ""}`),
   positions: () => get<{ positions: Position[]; holdings: Holding[] }>("/api/positions"),
   watchlist: () => get<{ watchlist: Record<string, string[]> }>("/api/watchlist"),
+  addTicker: (market_id: string, ticker: string) =>
+    post<{ ok: boolean; watchlist: string[] }>(`/api/watchlist/${market_id}`, { ticker }),
+  removeTicker: (market_id: string, ticker: string) =>
+    fetch(`${BASE}/api/watchlist/${market_id}/${encodeURIComponent(ticker)}`, { method: "DELETE" })
+      .then(r => { if (!r.ok) throw new Error(`${r.status}`); return r.json() as Promise<{ ok: boolean; watchlist: string[] }>; }),
   orders: (market?: string, status?: string) =>
     get<{ orders: BrokerOrder[] }>(`/api/orders?market_id=${market ?? "us"}&status=${status ?? "all"}`),
   placeOrder: (body: {

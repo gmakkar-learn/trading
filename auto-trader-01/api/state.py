@@ -14,6 +14,7 @@ class AppState:
     feeds: dict[str, Any] = field(default_factory=dict)             # market_id → announcement feed
     candle_feeds: dict[str, Any] = field(default_factory=dict)     # market_id → CandleFeed
     telegram_sender: Any = None
+    watchlist_provider: Any = None
     signal_history: list[dict] = field(default_factory=list)        # in-memory cache, capped at 200
     alert_log: list[dict] = field(default_factory=list)             # TradingView webhook receipts, capped at 100
     audit: Any = None                                                # AuditLogger

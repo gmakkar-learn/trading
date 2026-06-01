@@ -97,6 +97,11 @@ async def lifespan(app: FastAPI):
     # ── Per-market pipeline setup ─────────────────────────────────────────────
     registry = ConfigRegistry(_CONFIG_DIR)
 
+    # Shared provider — handles all markets; stored on state so the watchlist
+    # API can call add_ticker/remove_ticker and propagate to live feeds.
+    watchlist_provider = WatchlistProvider(_CONFIG_DIR)
+    state.watchlist_provider = watchlist_provider
+
     for market_id in active_markets:
         try:
             ctx = load_market_context(market_id, _CONFIG_DIR)
@@ -118,7 +123,6 @@ async def lifespan(app: FastAPI):
         state.monitor_agents[market_id] = monitor
 
         # Build StrategyEngine
-        watchlist_provider = WatchlistProvider(_CONFIG_DIR)
         await watchlist_provider.refresh(market_id)
         strategy_ctx = StrategyContext(
             market=ctx,
