@@ -11,7 +11,8 @@ class AppState:
     brokers: dict[str, Any] = field(default_factory=dict)           # market_id → BrokerAdapter
     engines: dict[str, Any] = field(default_factory=dict)           # market_id → StrategyEngine
     monitor_agents: dict[str, Any] = field(default_factory=dict)    # market_id → MonitorAgent
-    feeds: dict[str, Any] = field(default_factory=dict)             # market_id → feed instance
+    feeds: dict[str, Any] = field(default_factory=dict)             # market_id → announcement feed
+    candle_feeds: dict[str, Any] = field(default_factory=dict)     # market_id → CandleFeed
     telegram_sender: Any = None
     signal_history: list[dict] = field(default_factory=list)        # in-memory cache, capped at 200
     audit: Any = None                                                # AuditLogger

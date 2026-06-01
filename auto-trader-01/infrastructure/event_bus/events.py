@@ -37,15 +37,17 @@ class AnnouncementEvent(DataEvent):
 
 @dataclass
 class CandleEvent(DataEvent):
-    """Emitted on OHLCV candle close."""
+    """Emitted on OHLCV candle close. Carries full history for indicator computation."""
     ticker: str = ""
     market_id: str = ""
     timeframe: str = ""
-    open: float = 0.0
+    open: float = 0.0     # latest candle
     high: float = 0.0
     low: float = 0.0
     close: float = 0.0
     volume: float = 0.0
+    # Full OHLCV history as list of dicts with keys: date, open, high, low, close, volume
+    candles: list[dict] = field(default_factory=list)
 
 
 # ── Signal contract ───────────────────────────────────────────────────────────

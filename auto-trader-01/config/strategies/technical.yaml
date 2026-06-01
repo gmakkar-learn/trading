@@ -1,0 +1,28 @@
+version: "1.0"
+
+indicators:
+  sma_crossover:
+    fast: 50
+    slow: 200
+    weight: 0.40        # trend direction — highest weight
+
+  rsi:
+    period: 14
+    oversold: 30
+    overbought: 70
+    weight: 0.30        # momentum / entry timing
+
+  macd:
+    fast: 12
+    slow: 26
+    signal: 9
+    weight: 0.30        # momentum confirmation
+
+thresholds:
+  buy: 65               # composite >= this → BUY signal
+  sell: 35              # composite <= this → SELL signal
+
+execution:
+  stoploss_pct: 0.05
+  target_pct: 0.10
+  limit_price_slippage: 0.003

@@ -122,6 +122,28 @@ async def _run_poll(market_id: str) -> None:
     await _poll_market(market_id)
 
 
+@router.post("/trigger-candles")
+async def trigger_candles(market_id: str = "us"):
+    """Immediately run one candle poll cycle for the given market.
+
+    Fetches daily OHLCV history for all watchlist tickers, runs TechnicalStrategy,
+    and publishes any signals to the event bus.
+    """
+    state = get_state()
+    engine = state.engines.get(market_id)
+    feed = state.candle_feeds.get(market_id)
+    if engine is None or feed is None:
+        raise HTTPException(status_code=404, detail=f"No candle feed for market: {market_id}")
+
+    asyncio.create_task(_run_candles(market_id))
+    return {"ok": True, "market_id": market_id, "note": "Candle poll started in background — check logs"}
+
+
+async def _run_candles(market_id: str) -> None:
+    from api.main import _poll_candles
+    await _poll_candles(market_id)
+
+
 @router.post("/send-telegram-test")
 async def send_telegram_test():
     """Send a formatted sample signal alert directly to Telegram."""

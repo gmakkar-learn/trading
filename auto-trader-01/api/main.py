@@ -129,9 +129,10 @@ async def lifespan(app: FastAPI):
         engine = StrategyEngine(strategies, strategy_ctx, bus, audit)
         state.engines[market_id] = engine
 
-        # Build feed instance (tickers already cached by refresh above)
+        # Build feed instances (tickers already cached by refresh above)
         tickers = await watchlist_provider.get_tickers(market_id)
         state.feeds[market_id] = _create_feed(market_id, tickers)
+        state.candle_feeds[market_id] = _create_candle_feed(market_id, tickers)
 
         logger.info("Pipeline ready for market: %s (%d strategies, %d tickers)", market_id, len(strategies), len(tickers))
 
@@ -167,9 +168,18 @@ async def lifespan(app: FastAPI):
             args=[market_id],
             id=f"poll_{market_id}",
         )
+        # Candle feed: daily at 23:00 UTC (after both US and India markets have closed)
+        scheduler.add_job(
+            _poll_candles,
+            "cron",
+            hour=23,
+            minute=0,
+            args=[market_id],
+            id=f"candles_{market_id}",
+        )
 
     scheduler.start()
-    logger.info("Scheduler started — polling every %ds per market", poll_interval)
+    logger.info("Scheduler started — announcements every %ds, candles daily at 23:00 UTC", poll_interval)
 
     yield  # app running
 
@@ -195,6 +205,29 @@ async def _poll_market(market_id: str) -> None:
             await engine.handle_announcement(event)
     except Exception as exc:
         logger.error("Poll error for %s: %s", market_id, exc, exc_info=True)
+
+
+async def _poll_candles(market_id: str) -> None:
+    """Daily candle poll: fetch OHLCV history → TechnicalStrategy → signals."""
+    state = get_state()
+    engine = state.engines.get(market_id)
+    feed = state.candle_feeds.get(market_id)
+    if engine is None or feed is None:
+        return
+    logger.info("Candle poll starting for %s", market_id)
+    count = 0
+    try:
+        async for event in feed.stream_events():
+            await engine.handle_candle(event)
+            count += 1
+        logger.info("Candle poll complete for %s: %d tickers processed", market_id, count)
+    except Exception as exc:
+        logger.error("Candle poll error for %s: %s", market_id, exc, exc_info=True)
+
+
+def _create_candle_feed(market_id: str, tickers: list[str]):
+    from agents.strategy_engine.data_feeds.candle_feed import CandleFeed
+    return CandleFeed(market_id=market_id, tickers=tickers)
 
 
 def _create_feed(market_id: str, tickers: list[str]):
