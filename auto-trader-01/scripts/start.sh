@@ -61,14 +61,14 @@ else
   nohup uv run uvicorn api.main:app \
     --host 0.0.0.0 --port $BACKEND_PORT --log-level warning \
     > "$BACKEND_LOG" 2>&1 &
-  # Wait for it to accept connections
-  for i in $(seq 1 30); do
-    if curl -s --max-time 1 "http://localhost:$BACKEND_PORT/health" > /dev/null 2>&1; then
+  # Wait until the port accepts TCP connections (fast check, no external API calls)
+  for i in $(seq 1 60); do
+    if nc -z localhost $BACKEND_PORT 2>/dev/null; then
       green "started (${i}s)  — logs: logs/backend.log"
       break
     fi
-    if [[ $i -eq 30 ]]; then
-      red "timed out — check logs/backend.log"
+    if [[ $i -eq 60 ]]; then
+      red "timed out after 60s — check logs/backend.log"
       tail -20 "$BACKEND_LOG" >&2
       exit 1
     fi
@@ -103,7 +103,7 @@ fi
 # ── 4. Health summary ──────────────────────────────────────────────────────────
 echo ""
 echo "=== health check ==="
-HEALTH=$(curl -s --max-time 5 "http://localhost:$BACKEND_PORT/health" 2>/dev/null || echo '{"status":"unreachable"}')
+HEALTH=$(curl -s --max-time 30 "http://localhost:$BACKEND_PORT/health" 2>/dev/null || echo '{"status":"unreachable"}')
 STATUS=$(echo "$HEALTH" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('status','?'))" 2>/dev/null || echo "?")
 
 if [[ "$STATUS" == "ok" ]]; then
