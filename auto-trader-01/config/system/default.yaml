@@ -4,7 +4,7 @@ polling:
   normal_interval_seconds: 300
   elevated_interval_seconds: 60
 
-active_markets: [us]                 # add "india" once Upstox credentials are set
+active_markets: [us]                 # add "india" after running scripts/upstox_auth.py
 
 broker_mode: paper
 

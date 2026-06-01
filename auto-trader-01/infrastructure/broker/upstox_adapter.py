@@ -15,7 +15,7 @@ from typing import Callable
 import httpx
 
 from infrastructure.broker.base import (
-    BrokerAdapter, Position, Holding, Quote, OrderStatus, OrderUpdate,
+    BrokerAdapter, BrokerOrder, Position, Holding, Quote, OrderStatus, OrderUpdate,
 )
 from infrastructure.event_bus.events import Order, OrderResult
 
@@ -224,9 +224,40 @@ class UpstoxAdapter(BrokerAdapter):
             logger.error("Upstox get_order_status failed: %s", exc)
             raise
 
-    async def get_orders(self, status: str = "open") -> list:
-        logger.info("Upstox get_orders not yet implemented")
-        return []
+    async def get_orders(self, status: str = "open") -> list[BrokerOrder]:
+        try:
+            async with self._client() as client:
+                resp = await client.get(f"{self._base}/order/retrieve-all")
+                resp.raise_for_status()
+                data = resp.json().get("data", [])
+
+            status_map = {
+                "complete": "FILLED", "cancelled": "CANCELLED",
+                "rejected": "REJECTED", "open": "OPEN", "pending": "OPEN",
+            }
+            result = []
+            for o in data:
+                order_status = status_map.get(o.get("status", "").lower(), "OPEN")
+                if status == "open" and order_status != "OPEN":
+                    continue
+                if status == "closed" and order_status == "OPEN":
+                    continue
+                result.append(BrokerOrder(
+                    broker_order_id=o.get("order_id", ""),
+                    ticker=o.get("tradingsymbol", ""),
+                    side="BUY" if o.get("transaction_type") == "BUY" else "SELL",
+                    quantity=int(o.get("quantity", 0)),
+                    order_type="MARKET" if o.get("order_type") == "MARKET" else "LIMIT",
+                    status=order_status,
+                    limit_price=float(o.get("price", 0)),
+                    fill_price=float(o.get("average_price", 0)),
+                    filled_qty=int(o.get("filled_quantity", 0)),
+                    created_at=_parse_upstox_datetime(o.get("order_timestamp")),
+                ))
+            return result
+        except Exception as exc:
+            logger.error("Upstox get_orders failed: %s", exc)
+            return []
 
     async def health_check(self) -> bool:
         try:
@@ -240,3 +271,14 @@ class UpstoxAdapter(BrokerAdapter):
     def _instrument_token(ticker: str) -> str:
         """Convert NSE ticker symbol to Upstox instrument key format."""
         return f"NSE_EQ|{ticker}"
+
+
+def _parse_upstox_datetime(s: str | None) -> datetime | None:
+    if not s:
+        return None
+    for fmt in ("%d-%b-%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(s, fmt)
+        except (ValueError, TypeError):
+            pass
+    return None
