@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { api } from "./api";
 import type { Signal, Position, Holding, BrokerOrder } from "./api";
 import { TvChart } from "./components/TvChart";
@@ -169,9 +169,8 @@ function SignalsTab({ onChart }: { onChart: (ticker: string, market: "us" | "ind
               const ts = s.received_at || s.created_at;
               const isOpen = expanded === s.signal_id;
               return (
-                <>
+                <Fragment key={s.signal_id}>
                   <tr
-                    key={s.signal_id}
                     style={{ borderBottom: "1px solid #1f2937", cursor: "pointer" }}
                     onClick={() => setExpanded(isOpen ? null : s.signal_id)}
                     title="Click to expand rationale"
@@ -203,7 +202,7 @@ function SignalsTab({ onChart }: { onChart: (ticker: string, market: "us" | "ind
                     </td>
                   </tr>
                   {isOpen && (
-                    <tr key={`${s.signal_id}-rationale`} style={{ background: "#0f172a" }}>
+                    <tr style={{ background: "#0f172a" }}>
                       <td colSpan={8} style={{ padding: "12px 16px" }}>
                         {s.rationale
                           ? <RationaleView rationale={s.rationale} />
@@ -211,7 +210,7 @@ function SignalsTab({ onChart }: { onChart: (ticker: string, market: "us" | "ind
                       </td>
                     </tr>
                   )}
-                </>
+                </Fragment>
               );
             })}
           </tbody>
