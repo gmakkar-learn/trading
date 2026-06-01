@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState } from "react";
 import { api } from "./api";
-import type { Signal, Position, Holding, BrokerOrder } from "./api";
+import type { Signal, Position, Holding, BrokerOrder, Health, ServiceHealth } from "./api";
 import { TvChart } from "./components/TvChart";
 import "./App.css";
 
@@ -523,11 +523,72 @@ function ChartTab({ ticker, market, onTickerChange, onMarketChange }: {
   );
 }
 
+const SERVICE_LABELS: Record<string, string> = {
+  database:     "DB",
+  telegram:     "Telegram",
+  broker_us:    "Alpaca",
+  broker_india: "Upstox",
+};
+
+function HealthWidget({ health }: { health: Health | null }) {
+  const dotColor = (s: ServiceHealth | undefined): string => {
+    if (!s) return "#6b7280";
+    return s.status === "ok" ? "#22c55e" : s.status === "degraded" ? "#f59e0b" : "#ef4444";
+  };
+
+  if (!health) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#6b7280" }}>
+        <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#6b7280", display: "inline-block" }} />
+        connecting…
+      </div>
+    );
+  }
+
+  const services = health.services ?? {};
+  const entries = Object.keys(SERVICE_LABELS).map(key => ({
+    key,
+    label: SERVICE_LABELS[key],
+    svc: services[key] as ServiceHealth | undefined,
+  }));
+
+  const allOk = entries.every(e => e.svc?.status === "ok");
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+      {/* Overall indicator */}
+      <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: allOk ? "#22c55e" : "#f59e0b" }}>
+        <span style={{ width: 8, height: 8, borderRadius: "50%", background: allOk ? "#22c55e" : "#f59e0b", display: "inline-block" }} />
+        {allOk ? "healthy" : "degraded"}
+      </div>
+      {/* Per-service dots */}
+      <div style={{ display: "flex", gap: 6 }}>
+        {entries.map(({ key, label, svc }) => {
+          const color = dotColor(svc);
+          const status = svc?.status ?? "unknown";
+          const detail = svc?.detail ? ` — ${svc.detail}` : "";
+          const tooltip = `${label}: ${status}${detail}`;
+          return (
+            <div key={key} title={tooltip} style={{ display: "flex", alignItems: "center", gap: 4, cursor: "default" }}>
+              <span style={{
+                width: 10, height: 10, borderRadius: "50%", background: color,
+                display: "inline-block",
+                boxShadow: svc?.status !== "ok" ? `0 0 6px ${color}` : "none",
+              }} />
+              <span style={{ fontSize: 11, color: "#9ca3af" }}>{label}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [tab, setTab] = useState<Tab>("signals");
   const [chartTicker, setChartTicker] = useState("");
   const [chartMarket, setChartMarket] = useState<"us" | "india">("us");
-  const [health, setHealth] = useState<{ status: string; brokers: Record<string, string> } | null>(null);
+  const [health, setHealth] = useState<Health | null>(null);
 
   const goToChart = (ticker: string, market: "us" | "india") => {
     setChartTicker(ticker);
@@ -557,18 +618,7 @@ export default function App() {
             <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>Auto Trader 01</h1>
             <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>Algorithmic trading dashboard</div>
           </div>
-          {health && (
-            <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12 }}>
-              {Object.entries(health.brokers).map(([m, s]) => (
-                <span key={m} style={{
-                  background: s === "ok" ? "#14532d" : "#7f1d1d",
-                  color: "#fff", padding: "3px 8px", borderRadius: 4,
-                }}>
-                  {m}: {s}
-                </span>
-              ))}
-            </div>
-          )}
+          <HealthWidget health={health} />
         </div>
 
         <div style={{ display: "flex", gap: 4, borderBottom: "1px solid #1e293b", marginBottom: 24 }}>

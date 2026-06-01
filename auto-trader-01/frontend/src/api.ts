@@ -66,9 +66,15 @@ export interface BrokerOrder {
   created_at: string | null;
 }
 
+export interface ServiceHealth {
+  status: "ok" | "degraded" | "error";
+  detail: string;
+}
+
 export interface Health {
   status: string;
   timestamp: string;
+  services: Record<string, ServiceHealth>;
   brokers: Record<string, string>;
   active_markets: string[];
 }
