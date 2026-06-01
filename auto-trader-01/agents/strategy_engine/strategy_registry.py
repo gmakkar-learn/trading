@@ -38,6 +38,9 @@ def load_active_strategies(
         if market_id not in entry.get("markets", []):
             continue
 
+        if entry.get("type") == "webhook":
+            continue  # webhook strategies are handled by their own router, not the strategy engine
+
         strategy_id = entry["id"]
         config_key = entry["config_file"].removesuffix(".yaml")
         strategy_config = config_registry.get(config_key)
