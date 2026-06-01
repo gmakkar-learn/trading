@@ -13,7 +13,8 @@ class AppState:
     monitor_agents: dict[str, Any] = field(default_factory=dict)    # market_id → MonitorAgent
     feeds: dict[str, Any] = field(default_factory=dict)             # market_id → feed instance
     telegram_sender: Any = None
-    signal_history: list[dict] = field(default_factory=list)        # capped at 200
+    signal_history: list[dict] = field(default_factory=list)        # in-memory cache, capped at 200
+    audit: Any = None                                                # AuditLogger
     system_config: dict = field(default_factory=dict)
     event_bus: Any = None
 

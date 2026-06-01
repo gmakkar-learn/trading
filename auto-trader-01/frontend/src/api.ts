@@ -47,6 +47,19 @@ export interface Holding {
   currency: string;
 }
 
+export interface BrokerOrder {
+  broker_order_id: string;
+  ticker: string;
+  side: string;
+  quantity: number;
+  order_type: string;
+  status: string;
+  limit_price: number;
+  fill_price: number;
+  filled_qty: number;
+  created_at: string | null;
+}
+
 export interface Health {
   status: string;
   timestamp: string;
@@ -60,6 +73,8 @@ export const api = {
     get<{ signals: Signal[] }>(`/api/signals${market ? `?market=${market}` : ""}`),
   positions: () => get<{ positions: Position[]; holdings: Holding[] }>("/api/positions"),
   watchlist: () => get<{ watchlist: Record<string, string[]> }>("/api/watchlist"),
+  orders: (market?: string, status?: string) =>
+    get<{ orders: BrokerOrder[] }>(`/api/orders?market_id=${market ?? "us"}&status=${status ?? "all"}`),
   placeOrder: (body: {
     ticker: string;
     market_id: string;

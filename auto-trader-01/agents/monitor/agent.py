@@ -59,26 +59,76 @@ class MonitorAgent:
         if trade.market_id != self._ctx.market_id:
             return
 
-        logger.info("Trade recorded: %s %s x%d @ %.2f", trade.side, trade.ticker, trade.quantity, trade.fill_price)
-
-        await self._audit.log(
-            market_id=trade.market_id,
-            ticker=trade.ticker,
-            decision="TRADE_FILL",
-            reason=f"side={trade.side} qty={trade.quantity} fill={trade.fill_price} broker={trade.broker_order_id}",
-            signal_id=trade.signal_id,
-            order_id=trade.order_id,
-        )
-
-        if self._telegram is not None:
-            await self._telegram.send_fill_alert(trade)
-
         if trade.side == "BUY":
             self._active[trade.ticker] = trade
-            stoploss_price = round(trade.fill_price * (1 - _STOPLOSS_PCT), 2)
-            await self._place_stoploss(trade, stoploss_price)
-            task = asyncio.create_task(self._watch_position(trade, stoploss_price))
-            self._watch_tasks[trade.ticker] = task
+            fill_price = await self._resolve_fill_price(trade)
+            if fill_price > 0:
+                trade.fill_price = fill_price
+                logger.info("Trade filled: %s %s x%d @ %.2f", trade.side, trade.ticker, trade.quantity, trade.fill_price)
+                await self._audit.log(
+                    market_id=trade.market_id,
+                    ticker=trade.ticker,
+                    decision="TRADE_FILL",
+                    reason=f"side={trade.side} qty={trade.quantity} fill={trade.fill_price} broker={trade.broker_order_id}",
+                    signal_id=trade.signal_id,
+                    order_id=trade.order_id,
+                )
+                if self._telegram is not None:
+                    await self._telegram.send_fill_alert(trade)
+                await self._arm_stoploss(trade)
+            else:
+                # DAY order placed after hours — will fill at market open.
+                logger.info("Order for %s accepted but not yet filled — watching in background", trade.ticker)
+                asyncio.create_task(self._await_fill_and_arm(trade))
+
+    async def _resolve_fill_price(self, trade: TradeRecord) -> float:
+        """Quick poll: return fill price if already known, else retry up to 5s."""
+        if trade.fill_price > 0:
+            return trade.fill_price
+        for _ in range(5):
+            await asyncio.sleep(1)
+            try:
+                status = await self._broker.get_order_status(trade.broker_order_id)
+                if status.fill_price > 0:
+                    return status.fill_price
+            except Exception as exc:
+                logger.warning("Polling fill price for %s failed: %s", trade.ticker, exc)
+        return 0.0
+
+    async def _await_fill_and_arm(self, trade: TradeRecord) -> None:
+        """Background task: poll until order fills, then arm stoploss and watch loop."""
+        while True:
+            await asyncio.sleep(30)
+            try:
+                status = await self._broker.get_order_status(trade.broker_order_id)
+                if status.status in ("CANCELLED", "REJECTED"):
+                    logger.info("Order %s %s — aborting stoploss watch", trade.broker_order_id, status.status)
+                    self._active.pop(trade.ticker, None)
+                    return
+                if status.fill_price > 0:
+                    trade.fill_price = status.fill_price
+                    logger.info("%s filled @ %.2f — arming stoploss", trade.ticker, trade.fill_price)
+                    await self._audit.log(
+                        market_id=trade.market_id,
+                        ticker=trade.ticker,
+                        decision="TRADE_FILL",
+                        reason=f"side={trade.side} qty={trade.quantity} fill={trade.fill_price} broker={trade.broker_order_id}",
+                        signal_id=trade.signal_id,
+                        order_id=trade.order_id,
+                    )
+                    if self._telegram is not None:
+                        await self._telegram.send_fill_alert(trade)
+                    await self._arm_stoploss(trade)
+                    return
+            except Exception as exc:
+                logger.warning("Fill poll for %s failed: %s", trade.ticker, exc)
+
+    async def _arm_stoploss(self, trade: TradeRecord) -> None:
+        """Place stoploss order and start watch loop. Call only after fill_price is known."""
+        stoploss_price = round(trade.fill_price * (1 - _STOPLOSS_PCT), 2)
+        await self._place_stoploss(trade, stoploss_price)
+        task = asyncio.create_task(self._watch_position(trade, stoploss_price))
+        self._watch_tasks[trade.ticker] = task
 
     async def _place_stoploss(self, trade: TradeRecord, stoploss_price: float) -> None:
         """Place a sell stoploss order immediately after a buy fill."""

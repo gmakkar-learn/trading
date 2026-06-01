@@ -10,11 +10,11 @@ from datetime import datetime
 from typing import Callable
 
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
-from alpaca.trading.enums import OrderSide, TimeInForce, OrderType
+from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest, GetOrdersRequest
+from alpaca.trading.enums import OrderSide, TimeInForce, OrderType, QueryOrderStatus
 
 from infrastructure.broker.base import (
-    BrokerAdapter, Position, Holding, Quote, OrderStatus, OrderUpdate,
+    BrokerAdapter, BrokerOrder, Position, Holding, Quote, OrderStatus, OrderUpdate,
 )
 from infrastructure.event_bus.events import Order, OrderResult
 
@@ -28,11 +28,14 @@ class AlpacaAdapter(BrokerAdapter):
     paper=True uses Alpaca's paper trading environment — no real capital.
     """
 
-    def __init__(self, api_key: str, api_secret: str, paper: bool = True):
+    def __init__(self, api_key: str, api_secret: str, paper: bool = True, base_url: str | None = None):
         self._paper = paper
-        self._client = TradingClient(api_key, api_secret, paper=paper)
+        # alpaca-py appends /v2 internally — strip it if the caller included it
+        if base_url and base_url.endswith("/v2"):
+            base_url = base_url[:-3]
+        self._client = TradingClient(api_key, api_secret, paper=paper, url_override=base_url)
         env = "paper" if paper else "live"
-        logger.info("AlpacaAdapter initialised (%s)", env)
+        logger.info("AlpacaAdapter initialised (%s, url=%s)", env, base_url or "default")
 
     async def place_order(self, order: Order) -> OrderResult:
         side = OrderSide.BUY if order.side == "BUY" else OrderSide.SELL
@@ -163,6 +166,34 @@ class AlpacaAdapter(BrokerAdapter):
         except Exception as exc:
             logger.error("Alpaca get_order_status failed: %s", exc)
             raise
+
+    async def get_orders(self, status: str = "open") -> list[BrokerOrder]:
+        try:
+            status_map = {"open": QueryOrderStatus.OPEN, "closed": QueryOrderStatus.CLOSED, "all": QueryOrderStatus.ALL}
+            req = GetOrdersRequest(status=status_map.get(status, QueryOrderStatus.ALL), limit=50)
+            raw = self._client.get_orders(filter=req)
+            result_status_map = {
+                "filled": "FILLED", "canceled": "CANCELLED", "rejected": "REJECTED",
+                "new": "OPEN", "pending_new": "OPEN", "partially_filled": "OPEN",
+            }
+            return [
+                BrokerOrder(
+                    broker_order_id=str(o.id),
+                    ticker=o.symbol,
+                    side="BUY" if o.side == OrderSide.BUY else "SELL",
+                    quantity=int(o.qty),
+                    order_type="MARKET" if o.type == OrderType.MARKET else "LIMIT",
+                    status=result_status_map.get(o.status.value, "OPEN"),
+                    limit_price=float(o.limit_price or 0),
+                    fill_price=float(o.filled_avg_price or 0),
+                    filled_qty=int(o.filled_qty or 0),
+                    created_at=o.created_at,
+                )
+                for o in raw
+            ]
+        except Exception as exc:
+            logger.error("Alpaca get_orders failed: %s", exc)
+            return []
 
     async def health_check(self) -> bool:
         try:

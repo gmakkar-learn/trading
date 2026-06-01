@@ -224,6 +224,10 @@ class UpstoxAdapter(BrokerAdapter):
             logger.error("Upstox get_order_status failed: %s", exc)
             raise
 
+    async def get_orders(self, status: str = "open") -> list:
+        logger.info("Upstox get_orders not yet implemented")
+        return []
+
     async def health_check(self) -> bool:
         try:
             async with self._client() as client:

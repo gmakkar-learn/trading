@@ -94,6 +94,7 @@ class OrderProposal:
     market_id: str = ""
     side: str = ""              # "BUY" | "SELL"
     quantity: int = 0
+    order_type: str = "LIMIT"   # "LIMIT" | "MARKET"
     limit_price: float = 0.0
     stoploss: float = 0.0
     target: float = 0.0

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
-import type { Signal, Position, Holding } from "./api";
+import type { Signal, Position, Holding, BrokerOrder } from "./api";
 import "./App.css";
 
 type Tab = "signals" | "positions" | "orders" | "watchlist";
@@ -155,23 +155,45 @@ interface OrderForm {
   limit_price: number;
 }
 
+const STATUS_COLOR: Record<string, string> = {
+  OPEN: "#d97706", FILLED: "#16a34a", CANCELLED: "#6b7280", REJECTED: "#dc2626",
+};
+
 function OrdersTab() {
+  const [orders, setOrders] = useState<BrokerOrder[]>([]);
+  const [market, setMarket] = useState("us");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [listLoading, setListLoading] = useState(false);
+
   const [form, setForm] = useState<OrderForm>({
     ticker: "", market_id: "us", side: "BUY", quantity: 1, order_type: "LIMIT", limit_price: 0,
   });
   const [result, setResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const loadOrders = async () => {
+    setListLoading(true);
+    try {
+      const data = await api.orders(market, statusFilter);
+      setOrders(data.orders);
+    } finally {
+      setListLoading(false);
+    }
+  };
+
+  useEffect(() => { loadOrders(); }, [market, statusFilter]);
 
   const submit = async () => {
-    setResult(null); setError(null); setLoading(true);
+    setResult(null); setError(null); setSubmitting(true);
     try {
       const r = await api.placeOrder(form) as { status: string; broker_order_id: string; message?: string };
       setResult(`${r.status} — broker ref: ${r.broker_order_id || "—"}`);
+      loadOrders();
     } catch (e: unknown) {
       setError((e as Error).message);
     } finally {
-      setLoading(false);
+      setSubmitting(false);
     }
   };
 
@@ -202,24 +224,74 @@ function OrdersTab() {
   );
 
   return (
-    <div style={{ maxWidth: 480 }}>
-      <h3 style={{ color: "#9ca3af", marginBottom: 16 }}>Manual Order Entry</h3>
-      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        {row("Ticker", inp("ticker"))}
-        {row("Market", sel("market_id", ["us", "india"]))}
-        {row("Side", sel("side", ["BUY", "SELL"]))}
-        {row("Quantity", inp("quantity", "number"))}
-        {row("Order Type", sel("order_type", ["LIMIT", "MARKET"]))}
-        {form.order_type === "LIMIT" && row("Limit Price", inp("limit_price", "number"))}
-        <button
-          onClick={submit}
-          disabled={loading || !form.ticker}
-          style={{ padding: "8px 20px", background: "#2563eb", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer" }}
-        >
-          {loading ? "Placing…" : "Place Order"}
-        </button>
-        {result && <div style={{ color: "#16a34a", fontSize: 13 }}>✓ {result}</div>}
-        {error && <div style={{ color: "#dc2626", fontSize: 13 }}>✗ {error}</div>}
+    <div>
+      {/* Order list */}
+      <div style={{ marginBottom: 24 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12 }}>
+          <select value={market} onChange={e => setMarket(e.target.value)} style={{ padding: "4px 8px" }}>
+            <option value="us">US</option>
+            <option value="india">India</option>
+          </select>
+          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} style={{ padding: "4px 8px" }}>
+            <option value="all">All</option>
+            <option value="open">Open</option>
+            <option value="closed">Closed</option>
+          </select>
+          <button onClick={loadOrders} disabled={listLoading}>{listLoading ? "Loading…" : "Refresh"}</button>
+        </div>
+        {orders.length === 0 && !listLoading && <p style={{ color: "#9ca3af", fontSize: 13 }}>No orders found.</p>}
+        {orders.length > 0 && (
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ color: "#9ca3af", borderBottom: "1px solid #374151", textAlign: "left" }}>
+                {["Ticker", "Side", "Type", "Qty", "Filled", "Limit $", "Fill $", "Status", "Created"].map(h => (
+                  <th key={h} style={{ padding: "6px 8px", fontWeight: 500 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {orders.map(o => (
+                <tr key={o.broker_order_id} style={{ borderBottom: "1px solid #1f2937" }}>
+                  <td style={{ padding: "8px", fontWeight: 600 }}>{o.ticker}</td>
+                  <td style={{ padding: "8px", color: o.side === "BUY" ? "#16a34a" : "#dc2626" }}>{o.side}</td>
+                  <td style={{ padding: "8px", color: "#9ca3af" }}>{o.order_type}</td>
+                  <td style={{ padding: "8px" }}>{o.quantity}</td>
+                  <td style={{ padding: "8px" }}>{o.filled_qty}</td>
+                  <td style={{ padding: "8px" }}>{o.limit_price > 0 ? o.limit_price.toFixed(2) : "—"}</td>
+                  <td style={{ padding: "8px" }}>{o.fill_price > 0 ? o.fill_price.toFixed(2) : "—"}</td>
+                  <td style={{ padding: "8px" }}>
+                    <span style={{ color: STATUS_COLOR[o.status] ?? "#9ca3af", fontWeight: 600 }}>{o.status}</span>
+                  </td>
+                  <td style={{ padding: "8px", color: "#6b7280", fontSize: 11 }}>
+                    {o.created_at ? new Date(o.created_at).toLocaleString() : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* Manual order entry */}
+      <div style={{ borderTop: "1px solid #374151", paddingTop: 20, maxWidth: 480 }}>
+        <h3 style={{ color: "#9ca3af", marginBottom: 16, fontSize: 14 }}>Manual Order Entry</h3>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {row("Ticker", inp("ticker"))}
+          {row("Market", sel("market_id", ["us", "india"]))}
+          {row("Side", sel("side", ["BUY", "SELL"]))}
+          {row("Quantity", inp("quantity", "number"))}
+          {row("Order Type", sel("order_type", ["LIMIT", "MARKET"]))}
+          {form.order_type === "LIMIT" && row("Limit Price", inp("limit_price", "number"))}
+          <button
+            onClick={submit}
+            disabled={submitting || !form.ticker}
+            style={{ padding: "8px 20px", background: "#2563eb", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer" }}
+          >
+            {submitting ? "Placing…" : "Place Order"}
+          </button>
+          {result && <div style={{ color: "#16a34a", fontSize: 13 }}>✓ {result}</div>}
+          {error && <div style={{ color: "#dc2626", fontSize: 13 }}>✗ {error}</div>}
+        </div>
       </div>
     </div>
   );

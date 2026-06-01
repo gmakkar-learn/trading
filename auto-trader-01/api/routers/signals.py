@@ -14,7 +14,13 @@ async def list_signals(
     action: str | None = Query(None, description="Filter by action: BUY | HOLD | SELL"),
     limit: int = Query(50, le=200),
 ):
-    signals = get_state().signal_history
+    state = get_state()
+    # Prefer DB (survives restarts); fall back to in-memory if audit not ready
+    if state.audit is not None:
+        signals = await state.audit.get_signals(market_id=market, action=action, limit=limit)
+        # DB returns newest-first; reverse so frontend gets oldest-first (consistent with in-memory)
+        return {"signals": list(reversed(signals))}
+    signals = state.signal_history
     if market:
         signals = [s for s in signals if s.get("market_id") == market]
     if action:

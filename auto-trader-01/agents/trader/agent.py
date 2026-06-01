@@ -71,13 +71,14 @@ class TraderAgent:
                 "Auto-executing: score=%.1f >= threshold=%d [%s]",
                 p.composite_score, self._auto_threshold, p.ticker,
             )
-            await self._execute(p, approver="auto")
+            asyncio.create_task(self._execute(p, approver="auto"))
         else:
             logger.info(
                 "Manual approval required: score=%.1f < threshold=%d [%s]",
                 p.composite_score, self._auto_threshold, p.ticker,
             )
-            await self._request_approval(p)
+            # Run in background — waits up to 30min for Telegram button tap
+            asyncio.create_task(self._request_approval(p))
 
     async def _request_approval(self, proposal) -> None:
         timeout_at = datetime.now(timezone.utc) + timedelta(seconds=self._approval_timeout)
@@ -137,7 +138,7 @@ class TraderAgent:
             market_id=proposal.market_id,
             side=proposal.side,
             quantity=proposal.quantity,
-            order_type="LIMIT",
+            order_type=proposal.order_type,
             limit_price=proposal.limit_price,
             product_type=market_product,
         )
@@ -182,6 +183,19 @@ class TraderAgent:
                 proposal.side, proposal.ticker, proposal.quantity,
                 result.broker_order_id, approver,
             )
+            if self._telegram is not None:
+                sym = "₹" if proposal.market_id == "india" else "$"
+                price_str = f" @ {sym}{proposal.limit_price:.2f}" if order.order_type == "LIMIT" else " @ MARKET"
+                await self._telegram.send_alert(
+                    f"*Order Submitted* 🚀\n\n"
+                    f"Ticker: `{proposal.ticker}` ({proposal.market_id.upper()})\n"
+                    f"Side: {proposal.side}\n"
+                    f"Qty: {proposal.quantity}{price_str}\n"
+                    f"Score: {proposal.composite_score:.1f}/100\n"
+                    f"Via: {approver}\n"
+                    f"Broker ref: `{result.broker_order_id}`\n\n"
+                    f"_Awaiting fill confirmation..._"
+                )
         else:
             logger.error(
                 "Order rejected by broker: %s %s — %s",

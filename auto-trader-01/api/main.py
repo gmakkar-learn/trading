@@ -14,6 +14,7 @@ Run with:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -26,7 +27,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from api.routers import health, orders, positions, signals, watchlist, telegram_webhook
+from api.routers import health, orders, positions, signals, watchlist, telegram_webhook, debug
 from api.state import get_state
 from agents.monitor.agent import MonitorAgent
 from agents.risk_guard.agent import RiskGuardAgent
@@ -69,6 +70,7 @@ async def lifespan(app: FastAPI):
     secrets = EnvSecretsProvider()
     session_factory = get_session_factory()
     audit = AuditLogger(session_factory)
+    state.audit = audit
     bus = EventBus()
     state.event_bus = bus
 
@@ -83,6 +85,12 @@ async def lifespan(app: FastAPI):
             telegram_sender = TelegramSender(bot_token, chat_id, bus)
             state.telegram_sender = telegram_sender
             logger.info("Telegram sender initialised")
+
+            from infrastructure.telegram.poller import TelegramPoller
+            poller = TelegramPoller(bot_token, telegram_sender)
+            poller_task = asyncio.create_task(poller.start())
+            state.system_config["_poller"] = poller       # keep reference for shutdown
+            state.system_config["_poller_task"] = poller_task
         except KeyError as exc:
             logger.warning("Telegram enabled but secret missing: %s", exc)
 
@@ -131,11 +139,19 @@ async def lifespan(app: FastAPI):
     async def _record_signal(event: TradingSignalEvent) -> None:
         if event.signal:
             import dataclasses
-            d = dataclasses.asdict(event.signal)
-            d["created_at"] = event.signal.created_at.isoformat()
+            sig = event.signal
+            d = dataclasses.asdict(sig)
+            d["created_at"] = sig.created_at.isoformat()
             state.signal_history.append(d)
             if len(state.signal_history) > 200:
                 state.signal_history.pop(0)
+            # Persist to DB so signals survive restarts
+            await audit.log(
+                decision="SIGNAL",
+                market_id=sig.market_id,
+                ticker=sig.ticker,
+                signal=sig,
+            )
 
     bus.subscribe(TradingSignalEvent, _record_signal)
 
@@ -158,6 +174,12 @@ async def lifespan(app: FastAPI):
     yield  # app running
 
     scheduler.shutdown(wait=False)
+    poller = state.system_config.get("_poller")
+    poller_task = state.system_config.get("_poller_task")
+    if poller:
+        poller.stop()
+    if poller_task:
+        poller_task.cancel()
     logger.info("Shutdown complete")
 
 
@@ -177,12 +199,20 @@ async def _poll_market(market_id: str) -> None:
 
 def _create_feed(market_id: str, tickers: list[str]):
     if market_id == "us":
-        from agents.strategy_engine.data_feeds.announcement_feed import AnnouncementFeed
-        return AnnouncementFeed(tickers)
+        from agents.strategy_engine.data_feeds.announcement_feed import SecEdgarFeed
+        return SecEdgarFeed(tickers)
     if market_id == "india":
         from agents.strategy_engine.data_feeds.india_announcement_feed import IndiaAnnouncementFeed
         return IndiaAnnouncementFeed(tickers)
     return None
+
+
+async def _optional_secret(secrets: EnvSecretsProvider, key: str) -> str | None:
+    """Return secret value or None if not set — for optional config like base URLs."""
+    try:
+        return await secrets.get(key)
+    except KeyError:
+        return None
 
 
 async def _create_broker(broker_config_key: str, secrets: EnvSecretsProvider):
@@ -190,12 +220,14 @@ async def _create_broker(broker_config_key: str, secrets: EnvSecretsProvider):
         if broker_config_key == "alpaca_paper":
             api_key = await secrets.get("ALPACA_API_KEY")
             api_secret = await secrets.get("ALPACA_API_SECRET")
-            return AlpacaAdapter(api_key, api_secret, paper=True)
+            base_url = await _optional_secret(secrets, "ALPACA_BASE_URL")
+            return AlpacaAdapter(api_key, api_secret, paper=True, base_url=base_url)
 
         if broker_config_key == "alpaca_live":
             api_key = await secrets.get("ALPACA_API_KEY")
             api_secret = await secrets.get("ALPACA_API_SECRET")
-            return AlpacaAdapter(api_key, api_secret, paper=False)
+            base_url = await _optional_secret(secrets, "ALPACA_BASE_URL")
+            return AlpacaAdapter(api_key, api_secret, paper=False, base_url=base_url)
 
         if broker_config_key == "upstox_sandbox":
             token = await secrets.get("UPSTOX_ACCESS_TOKEN")
@@ -230,6 +262,7 @@ app.include_router(positions.router)
 app.include_router(orders.router)
 app.include_router(watchlist.router)
 app.include_router(telegram_webhook.router)
+app.include_router(debug.router)
 
 # Serve React dashboard if built
 if _FRONTEND_DIR.exists():

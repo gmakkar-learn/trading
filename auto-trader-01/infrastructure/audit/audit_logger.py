@@ -3,6 +3,8 @@ import dataclasses
 import logging
 from typing import Any
 
+from sqlalchemy import select, desc
+
 logger = logging.getLogger(__name__)
 
 
@@ -27,6 +29,10 @@ class AuditLogger:
         if signal is not None:
             try:
                 signal_json = dataclasses.asdict(signal)
+                # Make datetime fields JSON-serializable
+                for k, v in signal_json.items():
+                    if hasattr(v, "isoformat"):
+                        signal_json[k] = v.isoformat()
             except TypeError:
                 signal_json = {"raw": str(signal)}
         elif signal_id is not None:
@@ -50,3 +56,33 @@ class AuditLogger:
                 "AUDIT WRITE FAILED: %s | decision=%s ticker=%s reason=%s",
                 exc, decision, ticker, reason,
             )
+
+    async def get_signals(
+        self,
+        market_id: str | None = None,
+        action: str | None = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        """Return persisted signals from audit_log (decision='SIGNAL'), newest first."""
+        from infrastructure.database.models.audit_log import AuditLog  # noqa: PLC0415
+        try:
+            async with self._session_factory() as session:
+                stmt = (
+                    select(AuditLog)
+                    .where(AuditLog.decision == "SIGNAL")
+                    .order_by(desc(AuditLog.created_at))
+                    .limit(limit)
+                )
+                if market_id:
+                    stmt = stmt.where(AuditLog.market_id == market_id)
+                rows = (await session.execute(stmt)).scalars().all()
+                result = []
+                for row in rows:
+                    sig = row.signal_json or {}
+                    if action and sig.get("recommended_action") != action.upper():
+                        continue
+                    result.append(sig)
+                return result
+        except Exception as exc:
+            logger.error("get_signals query failed: %s", exc)
+            return []

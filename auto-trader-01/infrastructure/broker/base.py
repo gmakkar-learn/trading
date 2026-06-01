@@ -57,6 +57,21 @@ class OrderStatus:
     message: str = ""
 
 
+@dataclass
+class BrokerOrder:
+    """Normalised order record returned by get_orders()."""
+    broker_order_id: str
+    ticker: str
+    side: str           # "BUY" | "SELL"
+    quantity: int
+    order_type: str     # "LIMIT" | "MARKET"
+    status: str         # "OPEN" | "FILLED" | "CANCELLED" | "REJECTED"
+    limit_price: float
+    fill_price: float
+    filled_qty: int
+    created_at: datetime
+
+
 class BrokerAdapter(ABC):
     """Abstract base for all broker integrations.
 
@@ -87,6 +102,9 @@ class BrokerAdapter(ABC):
 
     @abstractmethod
     async def get_order_status(self, order_id: str) -> OrderStatus: ...
+
+    @abstractmethod
+    async def get_orders(self, status: str = "open") -> list[BrokerOrder]: ...
 
     @abstractmethod
     async def health_check(self) -> bool: ...
