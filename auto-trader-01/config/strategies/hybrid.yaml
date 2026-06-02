@@ -1,0 +1,35 @@
+version: "1.0"
+
+# Which strategy's cached signal to use as the fundamental gate.
+fundamental_strategy_id: "fundamental_v1"
+
+# Combined score = fundamental * fw + technical * tw
+weights:
+  fundamental: 0.60
+  technical:   0.40
+
+thresholds:
+  fundamental_min_score: 70   # fundamental BUY must score >= this
+  technical_min_score:   60   # technical composite must score >= this
+  combined_buy:          65   # weighted combined must score >= this to emit
+
+indicators:
+  sma_crossover:
+    fast: 50
+    slow: 200
+  rsi:
+    period: 14
+    oversold: 30
+    overbought: 70
+  macd:
+    fast: 12
+    slow: 26
+    signal: 9
+  weights:
+    sma: 0.40
+    rsi: 0.30
+    macd: 0.30
+
+execution:
+  stoploss_pct: 0.05
+  target_pct:   0.10

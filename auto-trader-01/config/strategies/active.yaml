@@ -11,8 +11,8 @@ active_strategies:
     config_file: strategies/technical.yaml
 
   - id: hybrid_v1
-    enabled: false
-    markets: [india]
+    enabled: true
+    markets: [us]
     config_file: strategies/hybrid.yaml
 
   - id: tradingview
