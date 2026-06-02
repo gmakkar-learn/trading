@@ -142,7 +142,9 @@ class SecEdgarFeed:
             async with self._semaphore:
                 resp = await client.get(index_url, headers=self._sec_headers, timeout=30.0)
                 resp.raise_for_status()
-            soup = BeautifulSoup(resp.text, "lxml")
+            html = resp.text
+            loop = asyncio.get_event_loop()
+            soup = await loop.run_in_executor(None, lambda: BeautifulSoup(html, "lxml"))
             for row in soup.select("table.tableFile tr"):
                 cells = row.find_all("td")
                 if len(cells) < 4:
