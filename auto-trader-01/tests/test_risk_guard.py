@@ -68,6 +68,8 @@ def _make_guard(positions: list[Position] | None = None, risk_overrides: dict | 
     ctx = load_market_context("us", config_dir)
 
     risk_cfg = _load_risk_cfg()
+    # Disable regime filter by default so existing tests don't hit yfinance
+    risk_cfg["market_regime"] = {"enabled": False}
     if risk_overrides:
         for k, v in risk_overrides.items():
             risk_cfg[k] = v
@@ -233,6 +235,71 @@ class TestOrderSizeCapEndToEnd:
             reason = await guard._run_checks(_make_signal(ticker="AAPL"))
         if reason:
             assert "order_size" not in reason
+
+
+# ── Rule 5: market regime ─────────────────────────────────────────────────────
+
+class TestMarketRegimeFilter:
+    _REGIME_CFG = {
+        "market_regime": {
+            "enabled": True,
+            "benchmarks": {"us": "SPY", "india": "^NSEI"},
+            "ma_window": 50,
+            "cache_ttl_minutes": 60,
+        }
+    }
+
+    @pytest.mark.asyncio
+    async def test_bear_market_rejects_buy(self):
+        """SPY below 50d MA → BUY signal rejected."""
+        guard = _make_guard(risk_overrides=self._REGIME_CFG)
+        with patch.object(guard, "_fetch_regime", return_value=False), \
+             patch("agents.risk_guard.agent.datetime") as mock_dt:
+            mock_dt.now.return_value = _market_open_time()
+            reason = await guard._run_checks(_make_signal())
+        assert reason is not None
+        assert "regime:bear_market" in reason
+
+    @pytest.mark.asyncio
+    async def test_bull_market_passes(self):
+        """SPY above 50d MA → regime check passes."""
+        guard = _make_guard(risk_overrides=self._REGIME_CFG)
+        with patch.object(guard, "_fetch_regime", return_value=True), \
+             patch("agents.risk_guard.agent.datetime") as mock_dt:
+            mock_dt.now.return_value = _market_open_time()
+            reason = await guard._run_checks(_make_signal())
+        if reason:
+            assert "regime" not in reason
+
+    @pytest.mark.asyncio
+    async def test_regime_disabled_always_passes(self):
+        """When market_regime.enabled is False the check is skipped entirely."""
+        guard = _make_guard(risk_overrides={"market_regime": {"enabled": False}})
+        with patch("agents.risk_guard.agent.datetime") as mock_dt:
+            mock_dt.now.return_value = _market_open_time()
+            reason = await guard._run_checks(_make_signal())
+        if reason:
+            assert "regime" not in reason
+
+    @pytest.mark.asyncio
+    async def test_yfinance_failure_allows_signal(self):
+        """If yfinance raises, the regime check fails open (signal is allowed through)."""
+        guard = _make_guard(risk_overrides=self._REGIME_CFG)
+        with patch.object(guard, "_fetch_regime", side_effect=RuntimeError("network error")), \
+             patch("agents.risk_guard.agent.datetime") as mock_dt:
+            mock_dt.now.return_value = _market_open_time()
+            reason = await guard._run_checks(_make_signal())
+        if reason:
+            assert "regime" not in reason
+
+    @pytest.mark.asyncio
+    async def test_regime_result_is_cached(self):
+        """_fetch_regime called only once even if _check_market_regime is called twice."""
+        guard = _make_guard(risk_overrides=self._REGIME_CFG)
+        with patch.object(guard, "_fetch_regime", return_value=True) as mock_fetch:
+            await guard._check_market_regime("us")
+            await guard._check_market_regime("us")
+        mock_fetch.assert_called_once()
 
 
 # ── Rule 7: clean pass ────────────────────────────────────────────────────────

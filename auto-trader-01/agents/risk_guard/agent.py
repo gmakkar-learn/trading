@@ -13,7 +13,9 @@ Checks (in order):
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -45,6 +47,7 @@ class RiskGuardAgent:
         self._ctx = market_context
         self._risk = risk_config
         self._audit = audit_logger
+        self._regime_cache: dict[str, tuple[bool, float]] = {}
         self._bus.subscribe(TradingSignalEvent, self._on_signal)
 
     async def _on_signal(self, event: TradingSignalEvent) -> None:
@@ -98,7 +101,12 @@ class RiskGuardAgent:
         if session_check:
             return session_check
 
-        # 3. Position concentration
+        # 3. Market regime — suppress BUY when benchmark is below 50-day MA
+        regime_check = await self._check_market_regime(signal.market_id)
+        if regime_check:
+            return regime_check
+
+        # 4. Position concentration
         conc_check = await self._check_concentration(signal.ticker)
         if conc_check:
             return conc_check
@@ -116,6 +124,47 @@ class RiskGuardAgent:
             return size_check
 
         return None
+
+    async def _check_market_regime(self, market_id: str) -> str | None:
+        regime_cfg = self._risk.get("market_regime", {})
+        if not regime_cfg.get("enabled", False):
+            return None
+
+        benchmarks = regime_cfg.get("benchmarks", {})
+        benchmark = benchmarks.get(market_id, "SPY")
+        ma_window = int(regime_cfg.get("ma_window", 50))
+        cache_ttl = int(regime_cfg.get("cache_ttl_minutes", 60)) * 60
+
+        now_ts = time.monotonic()
+        cached = self._regime_cache.get(market_id)
+        if cached is not None:
+            is_bull, ts = cached
+            if now_ts - ts < cache_ttl:
+                return None if is_bull else f"regime:bear_market ({benchmark} below {ma_window}d MA)"
+
+        loop = asyncio.get_event_loop()
+        try:
+            is_bull = await loop.run_in_executor(None, self._fetch_regime, benchmark, ma_window)
+            self._regime_cache[market_id] = (is_bull, now_ts)
+            if not is_bull:
+                return f"regime:bear_market ({benchmark} below {ma_window}d MA)"
+        except Exception as exc:
+            logger.warning("Market regime check failed for %s: %s — allowing signal", benchmark, exc)
+
+        return None
+
+    def _fetch_regime(self, benchmark: str, ma_window: int) -> bool:
+        """Return True (bull) if benchmark close > ma_window-day MA. Blocking — call via executor."""
+        import yfinance as yf
+        hist = yf.Ticker(benchmark).history(period=f"{ma_window * 2}d", interval="1d", auto_adjust=True)
+        if hist.empty or len(hist) < ma_window:
+            return True  # fail open — can't determine regime
+        closes = hist["Close"]
+        ma = float(closes.iloc[-ma_window:].mean())
+        current = float(closes.iloc[-1])
+        logger.info("Regime check %s: close=%.2f  %dd MA=%.2f  bull=%s",
+                    benchmark, current, ma_window, ma, current > ma)
+        return current > ma
 
     def _check_session(self) -> str | None:
         sessions_cfg = self._risk.get("sessions", {})

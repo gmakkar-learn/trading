@@ -1,3 +1,11 @@
+market_regime:
+  enabled: true
+  benchmarks:
+    us: "SPY"
+    india: "^NSEI"
+  ma_window: 50          # trading days
+  cache_ttl_minutes: 60  # re-check at most once per hour
+
 position_limits:
   max_single_stock_pct: 0.08
   max_sector_pct: 0.25
