@@ -22,6 +22,7 @@ from pathlib import Path
 
 import yaml
 from fastapi import APIRouter, HTTPException, Query, Request
+from sqlalchemy import select, desc
 
 from agents.strategy_engine.strategies.tradingview.adapter import (
     build_signal, is_stale, resolve_market,
@@ -61,6 +62,40 @@ def _log_alert(state, entry: dict) -> None:
         state.alert_log.pop(0)
 
 
+async def _persist_alert(entry: dict) -> None:
+    """Write alert entry to DB. Logs on failure, never raises."""
+    from infrastructure.database.connection import get_session_factory
+    from infrastructure.database.models.webhook_alert import WebhookAlert
+
+    try:
+        received_at = datetime.fromisoformat(entry["received_at"])
+        row = WebhookAlert(
+            received_at=received_at,
+            outcome=entry.get("outcome", "unknown"),
+            ticker=entry.get("ticker"),
+            strategy_id=entry.get("strategy_id"),
+            action=entry.get("action"),
+            score=entry.get("score"),
+            signal_id=entry.get("signal_id"),
+            ip=entry.get("ip"),
+            details={k: v for k, v in entry.items()
+                     if k not in {"received_at", "outcome", "ticker", "strategy_id",
+                                  "action", "score", "signal_id", "ip"}} or None,
+        )
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            session.add(row)
+            await session.commit()
+    except Exception as exc:
+        logger.warning("webhook_alert DB write failed: %s", exc)
+
+
+async def _record_alert(state, entry: dict) -> None:
+    """Update in-memory log and persist to DB."""
+    _log_alert(state, entry)
+    await _persist_alert(entry)
+
+
 @router.post("")
 async def receive_webhook(request: Request, secret: str | None = Query(default=None)):
     state   = get_state()
@@ -70,7 +105,7 @@ async def receive_webhook(request: Request, secret: str | None = Query(default=N
     # 1. Authenticate
     if not _check_secret(secret):
         logger.warning("TV webhook auth failure from %s", src_ip)
-        _log_alert(state, {"received_at": recv_at, "outcome": "auth_failure", "ip": src_ip})
+        await _record_alert(state, {"received_at": recv_at, "outcome": "auth_failure", "ip": src_ip})
         raise HTTPException(status_code=403, detail="Invalid webhook secret")
 
     # 2. Parse — TradingView sends Content-Type: text/plain, so read raw body and parse manually
@@ -80,12 +115,12 @@ async def receive_webhook(request: Request, secret: str | None = Query(default=N
     except Exception:
         raw = body.decode("utf-8", errors="replace")[:200] if "body" in dir() else ""
         logger.warning("TV webhook parse error from %s: %r", src_ip, raw)
-        _log_alert(state, {"received_at": recv_at, "outcome": "parse_error", "raw": raw})
+        await _record_alert(state, {"received_at": recv_at, "outcome": "parse_error", "raw": raw})
         return {"ok": False, "outcome": "parse_error"}
 
     missing = _REQUIRED_FIELDS - set(payload.keys())
     if missing:
-        _log_alert(state, {"received_at": recv_at, "outcome": "missing_fields", "missing": list(missing)})
+        await _record_alert(state, {"received_at": recv_at, "outcome": "missing_fields", "missing": list(missing)})
         return {"ok": False, "outcome": "missing_fields", "missing": list(missing)}
 
     ticker      = payload.get("ticker", "?")
@@ -96,18 +131,18 @@ async def receive_webhook(request: Request, secret: str | None = Query(default=N
     max_age       = int(source_cfg.get("signal", {}).get("max_age_seconds", 300))
     if is_stale(payload["timestamp"], max_age_seconds=max_age):
         logger.info("TV webhook discarded stale alert: %s %s", strategy_id, ticker)
-        _log_alert(state, {"received_at": recv_at, "strategy_id": strategy_id,
-                            "ticker": ticker, "action": payload.get("action"),
-                            "outcome": "discarded_stale"})
+        await _record_alert(state, {"received_at": recv_at, "strategy_id": strategy_id,
+                                    "ticker": ticker, "action": payload.get("action"),
+                                    "outcome": "discarded_stale"})
         return {"ok": True, "outcome": "discarded_stale"}
 
     # 4. Market resolution
     market_id = resolve_market(payload["exchange"])
     if market_id is None:
         logger.warning("TV webhook unknown exchange: %s", payload["exchange"])
-        _log_alert(state, {"received_at": recv_at, "strategy_id": strategy_id,
-                            "ticker": ticker, "outcome": "unknown_exchange",
-                            "exchange": payload["exchange"]})
+        await _record_alert(state, {"received_at": recv_at, "strategy_id": strategy_id,
+                                    "ticker": ticker, "outcome": "unknown_exchange",
+                                    "exchange": payload["exchange"]})
         return {"ok": True, "outcome": "unknown_exchange"}
 
     # 5. min_score gate
@@ -115,9 +150,9 @@ async def receive_webhook(request: Request, secret: str | None = Query(default=N
     score      = float(payload.get("score") or source_cfg.get("signal", {}).get("default_score", 85.0))
     if score < min_score:
         logger.info("TV webhook signal discarded: score %.1f < min %.1f (%s %s)", score, min_score, strategy_id, ticker)
-        _log_alert(state, {"received_at": recv_at, "strategy_id": strategy_id,
-                            "ticker": ticker, "action": payload.get("action"),
-                            "score": score, "outcome": "discarded_low_score"})
+        await _record_alert(state, {"received_at": recv_at, "strategy_id": strategy_id,
+                                    "ticker": ticker, "action": payload.get("action"),
+                                    "score": score, "outcome": "discarded_low_score"})
         return {"ok": True, "outcome": "discarded_low_score", "score": score, "min_score": min_score}
 
     # 6. Build TradingSignal
@@ -129,7 +164,7 @@ async def receive_webhook(request: Request, secret: str | None = Query(default=N
     # 7. Publish — _record_signal in main.py handles signal_history + audit for all TradingSignalEvents
     await state.event_bus.publish(TradingSignalEvent(signal=signal))
 
-    _log_alert(state, {
+    await _record_alert(state, {
         "received_at": recv_at,
         "strategy_id": strategy_id,
         "ticker":      ticker,
@@ -146,9 +181,39 @@ async def receive_webhook(request: Request, secret: str | None = Query(default=N
 @router.get("/log")
 async def alert_log(limit: int = Query(default=20, le=100)):
     """Return the last N received webhook alerts with their processing outcome."""
-    state  = get_state()
-    alerts = list(reversed(state.alert_log))[:limit]
-    return {"count": len(alerts), "alerts": alerts}
+    from infrastructure.database.connection import get_session_factory
+    from infrastructure.database.models.webhook_alert import WebhookAlert
+
+    try:
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            stmt = (
+                select(WebhookAlert)
+                .order_by(desc(WebhookAlert.received_at))
+                .limit(limit)
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+            alerts = []
+            for r in rows:
+                entry = {
+                    "received_at": r.received_at.isoformat(),
+                    "outcome":     r.outcome,
+                    "ticker":      r.ticker,
+                    "strategy_id": r.strategy_id,
+                    "action":      r.action,
+                    "score":       r.score,
+                    "signal_id":   r.signal_id,
+                    "ip":          r.ip,
+                }
+                if r.details:
+                    entry.update(r.details)
+                alerts.append({k: v for k, v in entry.items() if v is not None})
+        return {"count": len(alerts), "alerts": alerts}
+    except Exception as exc:
+        logger.warning("webhook_alert DB read failed, using in-memory fallback: %s", exc)
+        state  = get_state()
+        alerts = list(reversed(state.alert_log))[:limit]
+        return {"count": len(alerts), "alerts": alerts}
 
 
 @router.get("/setup")

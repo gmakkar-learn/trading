@@ -6,6 +6,7 @@ from .positions import Position
 from .signals import Signal
 from .tax_events import TaxEvent
 from .watchlist_entry import WatchlistEntry
+from .webhook_alert import WebhookAlert
 
 __all__ = [
     "Announcement",
@@ -15,4 +16,5 @@ __all__ = [
     "Signal",
     "TaxEvent",
     "WatchlistEntry",
+    "WebhookAlert",
 ]
