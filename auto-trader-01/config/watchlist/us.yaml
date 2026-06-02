@@ -13,5 +13,7 @@ sources:
   - JNJ
   - NFLX
   - TSM
+  - NTAP
+  - ORCL
   type: static
 version: '1.0'
