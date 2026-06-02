@@ -1,5 +1,6 @@
 """Extracts plain text from SEC EDGAR press releases (HTML or PDF)."""
 from __future__ import annotations
+import asyncio
 import logging
 import os
 from io import BytesIO
@@ -32,10 +33,11 @@ class DocumentExtractor:
             content = resp.content
             text_content = resp.text
 
+        loop = asyncio.get_event_loop()
         if "pdf" in content_type or url.lower().endswith(".pdf"):
-            result = self._extract_pdf(content)
+            result = await loop.run_in_executor(None, self._extract_pdf, content)
         else:
-            result = self._extract_html(text_content)
+            result = await loop.run_in_executor(None, self._extract_html, text_content)
 
         self._cache.put(url, result)
         return result
