@@ -3,6 +3,11 @@ version: "1.0"
 # Which strategy's cached signal to use as the fundamental gate.
 fundamental_strategy_id: "fundamental_v1"
 
+# How long a cached fundamental BUY signal stays valid for hybrid confirmation.
+# Post-earnings consolidation typically resolves within 5–7 days; 168h (7 days)
+# captures the full window while avoiding stale signals from the prior quarter.
+fundamental_ttl_hours: 168
+
 # Combined score = fundamental * fw + technical * tw
 weights:
   fundamental: 0.60
@@ -33,3 +38,14 @@ indicators:
 execution:
   stoploss_pct: 0.05
   target_pct:   0.10
+
+# Per-market configuration overrides.
+# Keys must match market_id values used in CandleEvent / AnnouncementEvent.
+market_overrides:
+  india:
+    # 36-month backtest (39 signals, ^NSMIDCP regime filter) showed the SMA/RSI/MACD
+    # technical gate selected for "already-moved" small/mid-caps, cutting the +10d
+    # win rate from 56% (fundamental-only) to 33% (hybrid). Disabling the gate
+    # for India preserves the fundamental edge. Score ≥70 passes the pre-live gate.
+    technical_gate_enabled: false
+    fundamental_min_score: 70   # India-specific floor (matches global default; explicit)

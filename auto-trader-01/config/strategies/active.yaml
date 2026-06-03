@@ -2,7 +2,7 @@ active_strategies:
 
   - id: fundamental_v1
     enabled: true
-    markets: [us]
+    markets: [us, india]   # India: populates signal cache; hybrid_v1 (tech gate off) re-emits
     config_file: strategies/fundamental.yaml
 
   - id: technical_v1
@@ -12,7 +12,7 @@ active_strategies:
 
   - id: hybrid_v1
     enabled: true
-    markets: [us]
+    markets: [us, india]   # India: market_overrides.india.technical_gate_enabled=false
     config_file: strategies/hybrid.yaml
 
   - id: tradingview

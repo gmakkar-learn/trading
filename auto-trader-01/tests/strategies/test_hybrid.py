@@ -8,6 +8,7 @@ Verifies the two-gate logic:
   5. Not enough candles → no hybrid signal
   6. Combined score below combined_buy threshold → no hybrid signal
   7. Fundamental HOLD in cache → no hybrid signal
+  8. Fundamental signal older than 168h TTL → no hybrid signal
 
 Technical scorer functions are patched so tests don't depend on
 pandas-ta indicator math.
@@ -15,6 +16,7 @@ pandas-ta indicator math.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -38,6 +40,12 @@ _CFG = {
     "indicators": {
         "weights": {"sma": 0.40, "rsi": 0.30, "macd": 0.30},
     },
+    "market_overrides": {
+        "india": {
+            "technical_gate_enabled": False,
+            "fundamental_min_score":  70.0,
+        },
+    },
 }
 
 
@@ -49,18 +57,25 @@ def _make_candles(n: int = 210) -> list[dict]:
     ]
 
 
-def _make_fund_signal(score: float = 75.0, action: str = "BUY") -> TradingSignal:
-    return TradingSignal(
+def _make_fund_signal(
+    score: float = 75.0,
+    action: str = "BUY",
+    created_at: datetime | None = None,
+) -> TradingSignal:
+    kwargs: dict = dict(
         ticker="AAPL", market_id="us", strategy_type="fundamental",
         strategy_id="fundamental_v1", composite_score=score,
         recommended_action=action, confidence="high",
         rationale="strong earnings", context={},
     )
+    if created_at is not None:
+        kwargs["created_at"] = created_at
+    return TradingSignal(**kwargs)
 
 
-def _make_candle_event(ticker: str = "AAPL", n_candles: int = 210) -> CandleEvent:
+def _make_candle_event(ticker: str = "AAPL", n_candles: int = 210, market_id: str = "us") -> CandleEvent:
     return CandleEvent(
-        ticker=ticker, market_id="us", timeframe="1d",
+        ticker=ticker, market_id=market_id, timeframe="1d",
         close=151.0, candles=_make_candles(n_candles),
     )
 
@@ -137,6 +152,21 @@ class TestHybridGating:
         strategy = _make_strategy()
         ctx = _make_context(fund_signal=_make_fund_signal(score=80.0))
         result = await strategy.evaluate(_make_candle_event(n_candles=100), ctx)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_stale_fundamental_signal_no_hybrid(self):
+        """Fundamental signal older than 168h TTL → no hybrid signal."""
+        strategy = _make_strategy()
+        stale = _make_fund_signal(
+            score=80.0,
+            created_at=datetime.utcnow() - timedelta(hours=169),
+        )
+        ctx = _make_context(fund_signal=stale)
+        with patch(f"{_SCORE_PATH}._score_sma", return_value=(80.0, "above")), \
+             patch(f"{_SCORE_PATH}._score_rsi", return_value=(70.0, "42")), \
+             patch(f"{_SCORE_PATH}._score_macd", return_value=(75.0, "above")):
+            result = await strategy.evaluate(_make_candle_event(), ctx)
         assert result is None
 
     @pytest.mark.asyncio
@@ -231,3 +261,76 @@ class TestHybridSignalEmission:
             result = await strategy.evaluate(_make_candle_event(), ctx)
         assert result is not None
         assert result.confidence == "high"
+
+
+class TestHybridMarketOverrides:
+    """Technical gate can be disabled per market via market_overrides config."""
+
+    @pytest.mark.asyncio
+    async def test_india_tech_gate_disabled_emits_on_fundamental_alone(self):
+        """India market: tech gate disabled → BUY emitted even when tech scores are weak."""
+        strategy = _make_strategy()
+        fund_signal = TradingSignal(
+            ticker="CAPLIPOINT", market_id="india", strategy_type="fundamental",
+            strategy_id="fundamental_v1", composite_score=76.0,
+            recommended_action="BUY", confidence="medium",
+            rationale="strong earnings", context={},
+        )
+        ctx = _make_context(fund_signal=fund_signal)
+        # Tech scores that would fail the US gate (composite ≈ 40 < 60)
+        with patch(f"{_SCORE_PATH}._score_sma",  return_value=(40.0, "below")), \
+             patch(f"{_SCORE_PATH}._score_rsi",  return_value=(40.0, "65")), \
+             patch(f"{_SCORE_PATH}._score_macd", return_value=(40.0, "below")):
+            result = await strategy.evaluate(
+                _make_candle_event(ticker="CAPLIPOINT", market_id="india"), ctx
+            )
+        assert result is not None
+        assert result.recommended_action == "BUY"
+        assert result.composite_score == 76.0
+        assert result.context["technical_gate"] == "disabled"
+
+    @pytest.mark.asyncio
+    async def test_india_tech_gate_disabled_uses_fundamental_score_as_combined(self):
+        """India: combined score equals the fundamental score (no blending)."""
+        strategy = _make_strategy()
+        fund_signal = TradingSignal(
+            ticker="POLYMED", market_id="india", strategy_type="fundamental",
+            strategy_id="fundamental_v1", composite_score=82.0,
+            recommended_action="BUY", confidence="high",
+            rationale="revenue beat", context={},
+        )
+        ctx = _make_context(fund_signal=fund_signal)
+        result = await strategy.evaluate(
+            _make_candle_event(ticker="POLYMED", market_id="india"), ctx
+        )
+        assert result is not None
+        assert result.composite_score == 82.0
+        assert result.confidence == "high"   # ≥80
+
+    @pytest.mark.asyncio
+    async def test_india_tech_gate_disabled_still_enforces_fund_min_score(self):
+        """India: fundamental_min_score override still gates low-scoring signals."""
+        strategy = _make_strategy()
+        fund_signal = TradingSignal(
+            ticker="JKPAPER", market_id="india", strategy_type="fundamental",
+            strategy_id="fundamental_v1", composite_score=65.0,  # below India min of 70
+            recommended_action="BUY", confidence="low",
+            rationale="moderate earnings", context={},
+        )
+        ctx = _make_context(fund_signal=fund_signal)
+        result = await strategy.evaluate(
+            _make_candle_event(ticker="JKPAPER", market_id="india"), ctx
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_us_market_still_requires_technical_gate(self):
+        """US market is unaffected — technical gate remains enforced."""
+        strategy = _make_strategy()
+        ctx = _make_context(fund_signal=_make_fund_signal(score=80.0))
+        # Weak tech scores that fail the US gate
+        with patch(f"{_SCORE_PATH}._score_sma",  return_value=(40.0, "below")), \
+             patch(f"{_SCORE_PATH}._score_rsi",  return_value=(40.0, "65")), \
+             patch(f"{_SCORE_PATH}._score_macd", return_value=(40.0, "below")):
+            result = await strategy.evaluate(_make_candle_event(market_id="us"), ctx)
+        assert result is None

@@ -4,7 +4,7 @@ from infrastructure.event_bus.events import TradingSignal
 
 
 class SignalCache:
-    def __init__(self, ttl_hours: int = 48) -> None:
+    def __init__(self, ttl_hours: int = 240) -> None:
         self._cache: dict[tuple[str, str], tuple[TradingSignal, datetime]] = {}
         self._ttl = timedelta(hours=ttl_hours)
 

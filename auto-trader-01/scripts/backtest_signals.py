@@ -43,6 +43,9 @@ from agents.strategy_engine.data_feeds.announcement_feed import SecEdgarFeed as 
 from agents.strategy_engine.strategies.fundamental.claude_client import ClaudeClient
 from agents.strategy_engine.strategies.fundamental.pdf_extractor import DocumentExtractor
 from agents.strategy_engine.strategies.fundamental import composite_scorer
+from agents.strategy_engine.strategies.technical.strategy import (
+    _score_macd, _score_rsi, _score_sma, _to_dataframe,
+)
 from infrastructure.config_registry.loader import ConfigRegistry
 
 console = Console()
@@ -80,6 +83,64 @@ def _get_spy_return(signal_date: date, horizon_days: int) -> Optional[float]:
     return _get_forward_return("SPY", signal_date, horizon_days)
 
 
+def _was_bull_market(check_date: date, benchmark: str = "SPY", ma_window: int = 50) -> bool:
+    """Return True if benchmark close on check_date was above its ma_window-day MA. Fail open."""
+    try:
+        start = check_date - timedelta(days=ma_window * 3)
+        end   = check_date + timedelta(days=5)
+        hist  = yf.Ticker(benchmark).history(start=start, end=end, interval="1d", auto_adjust=True)
+        if hist.empty or len(hist) < ma_window:
+            return True
+        closes    = hist["Close"]
+        idx_dates = [d.date() if hasattr(d, "date") else d for d in closes.index]
+        valid     = [(i, d) for i, d in enumerate(idx_dates) if d <= check_date]
+        if not valid or len(valid) < ma_window:
+            return True
+        last_i  = valid[-1][0]
+        current = float(closes.iloc[last_i])
+        ma      = float(closes.iloc[max(0, last_i - ma_window + 1): last_i + 1].mean())
+        return current > ma
+    except Exception:
+        return True
+
+
+# ── Technical gate simulation ─────────────────────────────────────────────────
+
+def _get_candles_for_date(ticker: str, as_of_date: date, n: int = 250) -> list[dict]:
+    """Fetch n trading-day candles ending on as_of_date for technical gate simulation."""
+    try:
+        start = as_of_date - timedelta(days=n * 2)
+        end   = as_of_date + timedelta(days=2)
+        hist  = yf.Ticker(ticker).history(start=start, end=end, interval="1d", auto_adjust=True)
+        if hist.empty:
+            return []
+        idx_dates = [d.date() if hasattr(d, "date") else d for d in hist.index]
+        hist = hist.iloc[[d <= as_of_date for d in idx_dates]]
+        hist = hist.tail(n)
+        return [
+            {"open": float(r.Open), "high": float(r.High),
+             "low": float(r.Low), "close": float(r.Close), "volume": float(r.Volume)}
+            for _, r in hist.iterrows()
+        ]
+    except Exception:
+        return []
+
+
+def _check_technical_gate(candles: list[dict], hybrid_cfg: dict) -> tuple[bool, float]:
+    """Return (passes_gate, tech_score). Requires ≥210 candles."""
+    if len(candles) < 210:
+        return False, 0.0
+    df       = _to_dataframe(candles)
+    ind_cfg  = hybrid_cfg.get("indicators", {})
+    w        = ind_cfg.get("weights", {"sma": 0.40, "rsi": 0.30, "macd": 0.30})
+    sma_s, _ = _score_sma (df, ind_cfg.get("sma_crossover", {}))
+    rsi_s, _ = _score_rsi (df, ind_cfg.get("rsi",           {}))
+    mac_s, _ = _score_macd(df, ind_cfg.get("macd",          {}))
+    tech     = sma_s * w.get("sma", 0.40) + rsi_s * w.get("rsi", 0.30) + mac_s * w.get("macd", 0.30)
+    tech_min = float(hybrid_cfg.get("thresholds", {}).get("technical_min_score", 60.0))
+    return tech >= tech_min, round(tech, 1)
+
+
 # ── Signal scoring ────────────────────────────────────────────────────────────
 
 @dataclass
@@ -96,6 +157,8 @@ class BacktestRow:
     spy_5d:        Optional[float]
     spy_10d:       Optional[float]
     spy_30d:       Optional[float]
+    tech_score:    Optional[float] = None   # technical composite on filing date
+    hybrid_pass:   bool = False             # True if tech gate also passed
 
 
 async def process_filing(
@@ -106,6 +169,7 @@ async def process_filing(
     feed: AnnouncementFeed,
     min_score: float,
     fund_config: dict,
+    hybrid_cfg: dict,
 ) -> Optional[BacktestRow]:
     ticker      = filing["ticker"]
     filing_date = date.fromisoformat(filing["filing_date"])
@@ -162,6 +226,30 @@ async def process_filing(
         console.print(f"    [dim]Below min-score {min_score} — excluded from backtest[/dim]")
         return None
 
+    # Regime filter: skip if SPY was below 50d MA on the filing date
+    loop = asyncio.get_event_loop()
+    is_bull = await loop.run_in_executor(None, _was_bull_market, filing_date)
+    if not is_bull:
+        console.print(f"    [dim]Bear market on {filing_date} (SPY < 50d MA) — regime filtered[/dim]")
+        return None
+
+    # Hybrid gate simulation — technical confirmation as of filing date
+    loop = asyncio.get_event_loop()
+    candles = await loop.run_in_executor(None, _get_candles_for_date, ticker, filing_date)
+    tech_score:  Optional[float] = None
+    hybrid_pass: bool = False
+    if not candles:
+        console.print(f"    [dim]Hybrid gate: no candle data[/dim]")
+    else:
+        hybrid_pass, ts = _check_technical_gate(candles, hybrid_cfg)
+        tech_score = ts
+        gate_color = "green" if hybrid_pass else "yellow"
+        gate_word  = "PASS" if hybrid_pass else "FAIL"
+        console.print(
+            f"    Hybrid tech gate: [{gate_color}]{gate_word}[/{gate_color}]"
+            f"  tech_score={tech_score:.1f}  candles={len(candles)}"
+        )
+
     # Forward returns (run in thread to avoid blocking)
     loop = asyncio.get_event_loop()
     r5, r10, r30 = await asyncio.gather(
@@ -180,6 +268,7 @@ async def process_filing(
         score=scored.composite_score, action=scored.action, confidence=scored.confidence,
         ret_5d=r5, ret_10d=r10, ret_30d=r30,
         spy_5d=s5, spy_10d=s10, spy_30d=s30,
+        tech_score=tech_score, hybrid_pass=hybrid_pass,
     )
 
 
@@ -217,19 +306,26 @@ def print_report(rows: list[BacktestRow]) -> None:
     # ── Per-signal table ──────────────────────────────────────────────────────
     tbl = Table(title="BUY Signal Forward Returns (alpha vs SPY in brackets)",
                 box=box.SIMPLE_HEAVY, show_lines=True)
-    tbl.add_column("Ticker",  style="bold", width=7)
-    tbl.add_column("Quarter", width=9)
-    tbl.add_column("Filed",   width=11)
-    tbl.add_column("Score",   justify="right", width=6)
-    tbl.add_column("Conf",    width=7)
-    tbl.add_column("+5d",     justify="right", width=14)
-    tbl.add_column("+10d",    justify="right", width=14)
-    tbl.add_column("+30d",    justify="right", width=14)
+    tbl.add_column("Ticker",   style="bold", width=7)
+    tbl.add_column("Quarter",  width=9)
+    tbl.add_column("Filed",    width=11)
+    tbl.add_column("Score",    justify="right", width=6)
+    tbl.add_column("TechGate", justify="right", width=10)
+    tbl.add_column("Conf",     width=7)
+    tbl.add_column("+5d",      justify="right", width=14)
+    tbl.add_column("+10d",     justify="right", width=14)
+    tbl.add_column("+30d",     justify="right", width=14)
 
     for r in sorted(buy_rows, key=lambda x: x.filing_date, reverse=True):
+        if r.tech_score is None:
+            tech_cell = "[dim]—[/dim]"
+        elif r.hybrid_pass:
+            tech_cell = f"[green]✓ {r.tech_score:.0f}[/green]"
+        else:
+            tech_cell = f"[yellow]✗ {r.tech_score:.0f}[/yellow]"
         tbl.add_row(
             r.ticker, r.quarter, str(r.filing_date),
-            f"{r.score:.1f}", r.confidence,
+            f"{r.score:.1f}", tech_cell, r.confidence,
             _pct(r.ret_5d,  r.spy_5d),
             _pct(r.ret_10d, r.spy_10d),
             _pct(r.ret_30d, r.spy_30d),
@@ -280,11 +376,11 @@ def print_report(rows: list[BacktestRow]) -> None:
             + (f", avg={avg:+.1f}%" if avg is not None else "")
         )
 
-    # ── Gate verdict ──────────────────────────────────────────────────────────
-    n_buy = len(buy_rows)
+    # ── Fundamental-only gate verdict ─────────────────────────────────────────
+    n_buy    = len(buy_rows)
     n_enough = n_buy >= 10
 
-    console.print(f"\n[bold]Pre-live Gate:[/bold]")
+    console.print(f"\n[bold]Fundamental-Only Pre-live Gate:[/bold]")
     if not n_enough:
         console.print(
             f"  [yellow]⚠  Only {n_buy} BUY signals — need ≥10 for statistical confidence.[/yellow]\n"
@@ -294,6 +390,57 @@ def print_report(rows: list[BacktestRow]) -> None:
         console.print(f"  [green bold]PASS ✓[/green bold]  +10d win rate ≥ 55% with {n_buy} signals")
     else:
         console.print(f"  [red bold]FAIL ✗[/red bold]  +10d win rate below 55% threshold")
+
+    # ── Hybrid-filtered section ───────────────────────────────────────────────
+    hybrid_rows = [r for r in buy_rows if r.hybrid_pass]
+    no_data_n   = sum(1 for r in buy_rows if r.tech_score is None)
+
+    console.rule("\n[bold]Hybrid-Filtered Results[/bold]")
+    console.print(
+        f"Technical gate (SMA/RSI/MACD composite ≥ 60) applied on top of fundamental.\n"
+        f"  Fundamental BUY signals : {n_buy}\n"
+        f"  Passed technical gate   : {len(hybrid_rows)}"
+        + (f"\n  No candle data          : {no_data_n}" if no_data_n else "")
+    )
+
+    if not hybrid_rows:
+        console.print("\n[yellow]  No signals passed both gates — cannot measure win rate.[/yellow]")
+    else:
+        console.print("\n[bold]Hybrid Win Rate (BUY signals passing both gates):[/bold]")
+        hybrid_gate_pass = False
+        for attr, label, spy_attr in [
+            ("ret_5d",  "+5d",  "spy_5d"),
+            ("ret_10d", "+10d", "spy_10d"),
+            ("ret_30d", "+30d", "spy_30d"),
+        ]:
+            wins, n, rate = _win(hybrid_rows, attr)
+            stock_vals = [getattr(r, attr)      for r in hybrid_rows if getattr(r, attr)      is not None]
+            spy_vals   = [getattr(r, spy_attr)  for r in hybrid_rows if getattr(r, spy_attr)  is not None]
+            avg_ret    = sum(stock_vals) / len(stock_vals) if stock_vals else None
+            spy_avg    = sum(spy_vals)   / len(spy_vals)   if spy_vals   else None
+
+            color = "green" if rate >= 55 else "red"
+            if label == "+10d":
+                hybrid_gate_pass = rate >= 55 and n >= 5
+
+            spy_str   = f"  SPY avg: {spy_avg:+.1f}%" if spy_avg is not None else ""
+            alpha_str = f"  alpha: {(avg_ret - spy_avg):+.1f}%" if avg_ret is not None and spy_avg is not None else ""
+            console.print(f"  {label:>4}:  [{color}]{rate:.0f}% wins[/{color}]  ({wins}/{n})")
+            if avg_ret is not None:
+                console.print(f"         avg ret: {avg_ret:+.1f}%{spy_str}{alpha_str}")
+
+        n_hybrid = len(hybrid_rows)
+        console.print(f"\n[bold]Hybrid Pre-live Gate:[/bold]")
+        if n_hybrid < 10:
+            console.print(
+                f"  [yellow]⚠  Only {n_hybrid} hybrid signals — need ≥10 for statistical confidence.[/yellow]\n"
+                f"  [dim]Run with --months 18 or add more tickers.[/dim]"
+            )
+        elif hybrid_gate_pass:
+            console.print(f"  [green bold]PASS ✓[/green bold]  Hybrid +10d win rate ≥ 55% with {n_hybrid} signals")
+        else:
+            console.print(f"  [red bold]FAIL ✗[/red bold]  Hybrid +10d win rate below 55% threshold")
+
     console.print()
 
 
@@ -306,7 +453,9 @@ async def main(tickers: list[str], months: int, min_score: float) -> None:
     console.print(f"Period:  {since} → {date.today()} ({months} months)")
     console.print(f"Min score for inclusion: {min_score}\n")
 
-    fund_config = ConfigRegistry(config_dir=Path("config")).get("strategies/fundamental")
+    cfg         = ConfigRegistry(config_dir=Path("config"))
+    fund_config = cfg.get("strategies/fundamental")
+    hybrid_cfg  = cfg.get("strategies/hybrid")
     feed        = AnnouncementFeed(tickers=tickers, user_agent=os.getenv("SEC_EDGAR_USER_AGENT"))
     extractor   = DocumentExtractor()
     claude      = ClaudeClient()
@@ -330,7 +479,7 @@ async def main(tickers: list[str], months: int, min_score: float) -> None:
     rows: list[BacktestRow] = []
     async with httpx.AsyncClient(timeout=30.0) as client:
         for filing in all_filings:
-            row = await process_filing(filing, extractor, claude, client, feed, min_score, fund_config)
+            row = await process_filing(filing, extractor, claude, client, feed, min_score, fund_config, hybrid_cfg)
             if row:
                 rows.append(row)
 
