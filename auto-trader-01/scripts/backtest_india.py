@@ -32,6 +32,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import json
+import math
 import os
 import sys
 import xml.etree.ElementTree as ET
@@ -46,6 +48,8 @@ import httpx
 import yfinance as yf
 from dotenv import load_dotenv
 from rich.console import Console
+from rich.panel import Panel
+from rich.rule import Rule
 from rich.table import Table
 from rich import box
 
@@ -62,6 +66,42 @@ from agents.strategy_engine.strategies.technical.strategy import (
 from infrastructure.config_registry.loader import ConfigRegistry
 
 console = Console()
+
+
+# ── Statistical helpers (no scipy — stdlib math only) ─────────────────────────
+
+def _wilson_ci(wins: int, n: int, z: float = 1.645) -> tuple[float, float]:
+    """Wilson score interval. Default z=1.645 → 90% two-sided CI."""
+    if n == 0:
+        return 0.0, 1.0
+    p      = wins / n
+    denom  = 1 + z**2 / n
+    centre = (p + z**2 / (2 * n)) / denom
+    margin = (z / denom) * math.sqrt(p * (1 - p) / n + z**2 / (4 * n**2))
+    return max(0.0, centre - margin), min(1.0, centre + margin)
+
+
+def _norm_cdf(z: float) -> float:
+    return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+
+
+def _binom_pvalue(wins: int, n: int, p0: float = 0.5) -> float:
+    """One-sided p-value P(X ≥ wins | Binomial(n, p0)). Normal approximation with continuity correction."""
+    if n == 0:
+        return 1.0
+    z = (wins - 0.5 - n * p0) / math.sqrt(n * p0 * (1.0 - p0))
+    return 1.0 - _norm_cdf(z)
+
+
+def _info_ratio(alphas: list[float]) -> Optional[float]:
+    """Mean alpha / std(alpha). Returns None if insufficient data."""
+    if len(alphas) < 2:
+        return None
+    mean = sum(alphas) / len(alphas)
+    var  = sum((a - mean) ** 2 for a in alphas) / (len(alphas) - 1)
+    std  = math.sqrt(var)
+    return round(mean / std, 2) if std > 0 else None
+
 
 # ── Target universe ───────────────────────────────────────────────────────────
 # NSE symbol → (unused, display name)  — only NSE symbols needed now
@@ -402,6 +442,7 @@ async def process_filing(
     min_score:    float,
     fund_config:  dict,
     hybrid_cfg:   dict,
+    stats:        dict,
 ) -> Optional[BacktestRow]:
     filing_date = date.fromisoformat(filing["filing_date"])
     quarter     = filing["quarter"]
@@ -409,6 +450,7 @@ async def process_filing(
 
     days_since = (date.today() - filing_date).days
     if days_since < 35:
+        stats["too_recent"] = stats.get("too_recent", 0) + 1
         console.print(f"  [dim]{ticker} {quarter} — too recent ({days_since}d ago), skipping[/dim]")
         return None
 
@@ -421,10 +463,12 @@ async def process_filing(
         xml_text = await loop.run_in_executor(None, _fetch_xbrl_sync, xbrl_url)
         curr_metrics = _parse_xbrl(xml_text)
     except Exception as exc:
+        stats["no_xbrl"] = stats.get("no_xbrl", 0) + 1
         console.print(f"    [red]XBRL fetch/parse failed: {exc}[/red]")
         return None
 
     if not curr_metrics.get("revenue") and not curr_metrics.get("pat"):
+        stats["no_xbrl"] = stats.get("no_xbrl", 0) + 1
         console.print(f"    [yellow]No financial data in XBRL — skipping[/yellow]")
         return None
 
@@ -445,6 +489,7 @@ async def process_filing(
         result_doc = _xbrl_to_result_doc(ticker, quarter, curr_metrics, prior_metrics)
         scored     = composite_scorer.score(result_doc, fund_config)
     except Exception as exc:
+        stats["no_xbrl"] = stats.get("no_xbrl", 0) + 1
         console.print(f"    [red]Scoring failed: {exc}[/red]")
         return None
 
@@ -457,14 +502,20 @@ async def process_filing(
     )
 
     if scored.composite_score < min_score:
+        stats["below_score"] = stats.get("below_score", 0) + 1
         console.print(f"    [dim]Below min-score {min_score} — excluded[/dim]")
         return None
+
+    stats["buy_pre_regime"] = stats.get("buy_pre_regime", 0) + 1
 
     # Regime filter
     is_bull = await loop.run_in_executor(None, _was_nifty_bull, filing_date)
     if not is_bull:
+        stats["regime_filtered"] = stats.get("regime_filtered", 0) + 1
         console.print(f"    [dim]Bear market on {filing_date} (Midcap100 < 50d MA) — regime filtered[/dim]")
         return None
+
+    stats["passed"] = stats.get("passed", 0) + 1
 
     # Hybrid gate simulation
     nse_ticker   = ticker + ".NS"
@@ -666,9 +717,429 @@ def print_report(rows: list[BacktestRow]) -> None:
     console.print()
 
 
+# ── Formal evaluation scorecard ───────────────────────────────────────────────
+
+def print_formal_evaluation(
+    rows:       list[BacktestRow],
+    stats:      dict,
+    total_filings: int,
+    months:     int,
+    min_score:  float,
+    universe:   list[str],
+) -> None:
+    buy_rows     = [r for r in rows if r.action == "BUY"]
+    hybrid_rows  = [r for r in rows if r.action == "BUY" and r.hybrid_pass]
+    n            = len(buy_rows)
+
+    console.print(Rule("[bold]FORMAL STRATEGY EVALUATION SCORECARD[/bold]"))
+    console.print()
+
+    # ── Section 1: Signal pipeline ────────────────────────────────────────────
+    console.print("[bold underline]SECTION 1 — SIGNAL PIPELINE[/bold underline]")
+    pipeline_tbl = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
+    pipeline_tbl.add_column("Label", style="dim")
+    pipeline_tbl.add_column("Count", justify="right")
+    pipeline_tbl.add_row("Universe",            f"{len(universe)} tickers")
+    pipeline_tbl.add_row("Lookback",            f"{months} months")
+    pipeline_tbl.add_row("Total filings",        str(total_filings))
+    pipeline_tbl.add_row("Too recent (<35d)",    str(stats.get("too_recent", 0)))
+    pipeline_tbl.add_row("XBRL / scoring error", str(stats.get("no_xbrl", 0)))
+    pipeline_tbl.add_row(f"Below score {min_score:.0f}", str(stats.get("below_score", 0)))
+    pre  = stats.get("buy_pre_regime", 0)
+    rflt = stats.get("regime_filtered", 0)
+    pipeline_tbl.add_row(f"BUY ≥{min_score:.0f} before regime filter", str(pre))
+    pipeline_tbl.add_row("Regime filtered (Midcap100 < 50d MA)", f"[yellow]{rflt}[/yellow]")
+    pipeline_tbl.add_row("[bold]BUY signals (final)[/bold]",
+                         f"[bold green]{n}[/bold green]")
+    console.print(pipeline_tbl)
+
+    if n == 0:
+        console.print("[red]No BUY signals — cannot evaluate.[/red]")
+        return
+
+    # ── Section 2: Win rate scorecard ─────────────────────────────────────────
+    console.print("[bold underline]SECTION 2 — WIN RATE SCORECARD[/bold underline]")
+    console.print("  Phase 3 gate: +10d win rate ≥ 55%  ·  minimum n = 10\n")
+
+    wr_tbl = Table(box=box.SIMPLE_HEAVY, show_lines=False)
+    wr_tbl.add_column("Horizon", width=8)
+    wr_tbl.add_column("Wins/n",  justify="right", width=8)
+    wr_tbl.add_column("Win %",   justify="right", width=8)
+    wr_tbl.add_column("90% CI",  justify="center", width=18)
+    wr_tbl.add_column("Gate",    width=10)
+
+    gate_result: Optional[bool] = None
+    for attr, label in [("ret_5d", "+5d"), ("ret_10d", "+10d"), ("ret_30d", "+30d")]:
+        vals  = [getattr(r, attr) for r in buy_rows if getattr(r, attr) is not None]
+        wins  = sum(1 for v in vals if v > 0)
+        ni    = len(vals)
+        rate  = wins / ni if ni else 0.0
+        lo, hi = _wilson_ci(wins, ni)
+        ci_str = f"[{lo*100:.1f}%, {hi*100:.1f}%]"
+        color  = "green" if rate >= 0.55 else "red"
+
+        if label == "+10d":
+            if ni >= 10:
+                gate_result = rate >= 0.55
+                gate_str = ("[green bold]PASS ✓[/green bold]" if gate_result
+                            else "[red bold]FAIL ✗[/red bold]")
+            else:
+                gate_str = f"[yellow]n={ni} < 10[/yellow]"
+        else:
+            gate_str = "—"
+
+        wr_tbl.add_row(
+            label,
+            f"{wins}/{ni}",
+            f"[{color}]{rate*100:.1f}%[/{color}]",
+            f"[dim]{ci_str}[/dim]",
+            gate_str,
+        )
+    console.print(wr_tbl)
+
+    # ── Section 3: Statistical significance ───────────────────────────────────
+    console.print("[bold underline]SECTION 3 — STATISTICAL SIGNIFICANCE[/bold underline]")
+    td_vals = [r.ret_10d for r in buy_rows if r.ret_10d is not None]
+    td_wins = sum(1 for v in td_vals if v > 0)
+    ni      = len(td_vals)
+    p_val   = _binom_pvalue(td_wins, ni)
+    z_score = (td_wins - 0.5 - ni * 0.5) / math.sqrt(ni * 0.25) if ni else 0.0
+    sig     = p_val <= 0.10
+
+    sig_tbl = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
+    sig_tbl.add_column("Label", style="dim")
+    sig_tbl.add_column("Value")
+    sig_tbl.add_row("H₀", "win_rate(+10d) ≤ 0.50  (no edge over coin flip)")
+    sig_tbl.add_row("H₁", "win_rate(+10d) > 0.50")
+    sig_tbl.add_row("Method", "Normal approx to Binomial (continuity corrected)")
+    sig_tbl.add_row("z-score", f"{z_score:.2f}")
+    sig_tbl.add_row("p-value (one-sided)", f"{p_val:.3f}")
+    verdict = (
+        "[green]Reject H₀ at α=0.10 — edge statistically supported[/green]"
+        if sig else
+        "[yellow]Cannot reject H₀ at α=0.10 — edge not yet significant[/yellow]"
+    )
+    sig_tbl.add_row("Verdict", verdict)
+    console.print(sig_tbl)
+    if not sig:
+        console.print(
+            f"  [dim]Note: need ~{math.ceil(0.5 + 1.282 * math.sqrt(ni * 0.25) + ni * 0.5)} wins from {ni} signals "
+            f"(or larger n) for 90% significance.[/dim]\n"
+        )
+
+    # ── Section 4: Alpha vs benchmark ─────────────────────────────────────────
+    console.print("[bold underline]SECTION 4 — ALPHA vs NIFTY MIDCAP 100[/bold underline]")
+
+    alpha_tbl = Table(box=box.SIMPLE_HEAVY, show_lines=False)
+    alpha_tbl.add_column("Horizon",      width=8)
+    alpha_tbl.add_column("Avg Return",   justify="right", width=12)
+    alpha_tbl.add_column("Bench Avg",    justify="right", width=12)
+    alpha_tbl.add_column("Mean Alpha",   justify="right", width=12)
+    alpha_tbl.add_column("Alpha Rate",   justify="right", width=12)
+    alpha_tbl.add_column("Info Ratio",   justify="right", width=12)
+
+    for attr, battr, label in [
+        ("ret_5d",  "nifty_5d",  "+5d"),
+        ("ret_10d", "nifty_10d", "+10d"),
+        ("ret_30d", "nifty_30d", "+30d"),
+    ]:
+        pairs   = [(getattr(r, attr), getattr(r, battr))
+                   for r in buy_rows
+                   if getattr(r, attr) is not None and getattr(r, battr) is not None]
+        if not pairs:
+            alpha_tbl.add_row(label, "—", "—", "—", "—", "—")
+            continue
+        sigs   = [s for s, _ in pairs]
+        bnchs  = [b for _, b in pairs]
+        alphas = [s - b for s, b in pairs]
+        ma     = sum(alphas) / len(alphas)
+        ar     = sum(1 for a in alphas if a > 0) / len(alphas)
+        ir     = _info_ratio(alphas)
+        ac     = "green" if ma > 0 else "red"
+        alpha_tbl.add_row(
+            label,
+            f"{sum(sigs)/len(sigs):+.1f}%",
+            f"{sum(bnchs)/len(bnchs):+.1f}%",
+            f"[{ac}]{ma:+.1f}%[/{ac}]",
+            f"{ar*100:.0f}%",
+            f"{ir:+.2f}" if ir is not None else "—",
+        )
+    console.print(alpha_tbl)
+
+    # ── Section 5: Return profile (+10d) ──────────────────────────────────────
+    console.print("[bold underline]SECTION 5 — RETURN PROFILE  (+10d)[/bold underline]")
+
+    td_all  = [r.ret_10d for r in buy_rows if r.ret_10d is not None]
+    winners = [v for v in td_all if v > 0]
+    losers  = [v for v in td_all if v <= 0]
+    avg_win = sum(winners) / len(winners) if winners else 0.0
+    avg_los = sum(losers)  / len(losers)  if losers  else 0.0
+    wl_ratio = abs(avg_win / avg_los) if avg_los != 0 else float("inf")
+    wr_rate  = len(winners) / len(td_all) if td_all else 0.0
+    ev       = wr_rate * avg_win + (1 - wr_rate) * avg_los
+
+    rp_tbl = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
+    rp_tbl.add_column("Label", style="dim")
+    rp_tbl.add_column("Value", justify="right")
+    rp_tbl.add_row("Average win",    f"[green]{avg_win:+.2f}%[/green]  ({len(winners)} trades)")
+    rp_tbl.add_row("Average loss",   f"[red]{avg_los:+.2f}%[/red]  ({len(losers)} trades)")
+    rp_tbl.add_row("Win/loss ratio", f"{wl_ratio:.2f}x")
+    ev_color = "green" if ev > 0 else "red"
+    rp_tbl.add_row("Expected value per signal",
+                   f"[{ev_color}]{ev:+.2f}%[/{ev_color}]")
+    console.print(rp_tbl)
+
+    # ── Section 6: Score tier breakdown ───────────────────────────────────────
+    console.print("[bold underline]SECTION 6 — SCORE TIER BREAKDOWN  (+10d)[/bold underline]")
+
+    tier_tbl = Table(box=box.SIMPLE_HEAVY, show_lines=False)
+    tier_tbl.add_column("Tier",        width=8)
+    tier_tbl.add_column("n",           justify="right", width=5)
+    tier_tbl.add_column("Win Rate",    justify="right", width=10)
+    tier_tbl.add_column("90% CI",      justify="center", width=18)
+    tier_tbl.add_column("Avg Return",  justify="right", width=12)
+    tier_tbl.add_column("Avg Alpha",   justify="right", width=12)
+
+    for lo_s, hi_s, label in [(85, 101, "≥85"), (70, 85, "70–84"), (60, 70, "60–69")]:
+        tier = [r for r in buy_rows if lo_s <= r.score < hi_s]
+        if not tier:
+            continue
+        tv    = [r.ret_10d for r in tier if r.ret_10d is not None]
+        bv    = [r.nifty_10d for r in tier if r.nifty_10d is not None]
+        tw    = sum(1 for v in tv if v > 0)
+        tni   = len(tv)
+        rate  = tw / tni if tni else 0.0
+        lo_ci, hi_ci = _wilson_ci(tw, tni)
+        avg_r = sum(tv) / len(tv) if tv else 0.0
+        pairs = [(r.ret_10d, r.nifty_10d) for r in tier
+                 if r.ret_10d is not None and r.nifty_10d is not None]
+        avg_a = sum(s - b for s, b in pairs) / len(pairs) if pairs else 0.0
+        c     = "green" if rate >= 0.55 else "red"
+        ac    = "green" if avg_a > 0 else "red"
+        tier_tbl.add_row(
+            label, str(len(tier)),
+            f"[{c}]{rate*100:.1f}%[/{c}]",
+            f"[dim][{lo_ci*100:.1f}%, {hi_ci*100:.1f}%][/dim]",
+            f"{avg_r:+.1f}%",
+            f"[{ac}]{avg_a:+.1f}%[/{ac}]",
+        )
+    console.print(tier_tbl)
+
+    # ── Section 7: Gate comparison ────────────────────────────────────────────
+    console.print("[bold underline]SECTION 7 — GATE COMPARISON[/bold underline]")
+
+    gc_tbl = Table(box=box.SIMPLE_HEAVY, show_lines=False)
+    gc_tbl.add_column("Gate",             width=32)
+    gc_tbl.add_column("n",                justify="right", width=5)
+    gc_tbl.add_column("+10d Win Rate",    justify="right", width=14)
+    gc_tbl.add_column("Avg Alpha",        justify="right", width=12)
+    gc_tbl.add_column("Verdict",          width=12)
+
+    def _gate_row(label, subset):
+        sv  = [r.ret_10d for r in subset if r.ret_10d is not None]
+        bv  = [r.nifty_10d for r in subset if r.nifty_10d is not None]
+        sw  = sum(1 for v in sv if v > 0)
+        sni = len(sv)
+        rate = sw / sni if sni else 0.0
+        pairs = list(zip(sv, bv[:len(sv)]))
+        avg_a = sum(s - b for s, b in pairs) / len(pairs) if pairs else 0.0
+        c = "green" if rate >= 0.55 else "red"
+        ac = "green" if avg_a > 0 else "red"
+        if sni < 10:
+            verdict = f"[yellow]n={sni} < 10[/yellow]"
+        elif rate >= 0.55:
+            verdict = "[green bold]PASS ✓[/green bold]"
+        else:
+            verdict = "[red bold]FAIL ✗[/red bold]"
+        gc_tbl.add_row(
+            label, str(len(subset)),
+            f"[{c}]{rate*100:.1f}%[/{c}]",
+            f"[{ac}]{avg_a:+.1f}%[/{ac}]",
+            verdict,
+        )
+
+    _gate_row("Fundamental-only (tech gate off)", buy_rows)
+    _gate_row("Hybrid (SMA/RSI/MACD ≥ 60)",      hybrid_rows)
+    console.print(gc_tbl)
+
+    # ── Section 8: Regime filter value ────────────────────────────────────────
+    console.print("[bold underline]SECTION 8 — REGIME FILTER VALUE[/bold underline]")
+
+    rflt = stats.get("regime_filtered", 0)
+    pre  = stats.get("buy_pre_regime",  0)
+    pct  = rflt / pre * 100 if pre else 0.0
+    console.print(
+        f"  BUY signals before regime filter : {pre}\n"
+        f"  Removed by Midcap100 < 50d MA   : {rflt}  ({pct:.0f}% of pre-filter BUYs)\n"
+        f"  BUY signals after regime filter  : {n}\n"
+    )
+
+    # ── Section 9: Verdict ────────────────────────────────────────────────────
+    td_v  = [r.ret_10d for r in buy_rows if r.ret_10d is not None]
+    td_w  = sum(1 for v in td_v if v > 0)
+    td_ni = len(td_v)
+    wr    = td_w / td_ni if td_ni else 0.0
+
+    if td_ni < 10:
+        gate_color, gate_text = "yellow", f"INCONCLUSIVE — only {td_ni} signals"
+    elif wr >= 0.55:
+        gate_color, gate_text = "green", f"PASS ✓  {wr*100:.1f}% +10d win rate  ·  n={td_ni}"
+    else:
+        gate_color, gate_text = "red", f"FAIL ✗  {wr*100:.1f}% +10d win rate  ·  n={td_ni}"
+
+    sig_note = (
+        "Edge statistically supported (p≤0.10)"
+        if p_val <= 0.10 else
+        f"Edge not yet significant (p={p_val:.2f}) — monitor first 20 live signals before scaling"
+    )
+
+    console.print(Panel(
+        f"[{gate_color} bold]Phase 3 Pre-Live Gate:  {gate_text}[/{gate_color} bold]\n\n"
+        f"  Strategy      : Fundamental-only  ·  score ≥ {min_score:.0f}  ·  Midcap100 regime filter\n"
+        f"  Universe      : {len(universe)} NSE mid/small-caps  ·  {months}-month backtest\n"
+        f"  Expected value: {ev:+.2f}% per signal\n"
+        f"  Significance  : {sig_note}",
+        title="[bold]SECTION 9 — VERDICT[/bold]",
+        border_style=gate_color,
+    ))
+    console.print()
+
+
+# ── JSON export ───────────────────────────────────────────────────────────────
+
+def _export_results(
+    rows:          list[BacktestRow],
+    stats:         dict,
+    total_filings: int,
+    months:        int,
+    min_score:     float,
+    universe:      list[str],
+    export_path:   str,
+) -> None:
+    buy_rows    = [r for r in rows if r.action == "BUY"]
+    hybrid_rows = [r for r in rows if r.action == "BUY" and r.hybrid_pass]
+    n           = len(buy_rows)
+
+    td_vals  = [r.ret_10d for r in buy_rows if r.ret_10d is not None]
+    td_wins  = sum(1 for v in td_vals if v > 0)
+    ni       = len(td_vals)
+    win_rate = td_wins / ni if ni else 0.0
+    lo_ci, hi_ci = _wilson_ci(td_wins, ni)
+    p_val    = _binom_pvalue(td_wins, ni)
+    z_score  = (td_wins - 0.5 - ni * 0.5) / math.sqrt(ni * 0.25) if ni else 0.0
+    gate_pass = ni >= 10 and win_rate >= 0.55
+
+    winners  = [v for v in td_vals if v > 0]
+    losers   = [v for v in td_vals if v <= 0]
+    avg_win  = sum(winners) / len(winners) if winners else 0.0
+    avg_los  = sum(losers)  / len(losers)  if losers  else 0.0
+    ev       = win_rate * avg_win + (1 - win_rate) * avg_los
+
+    pairs_10d  = [(r.ret_10d, r.nifty_10d) for r in buy_rows
+                  if r.ret_10d is not None and r.nifty_10d is not None]
+    mean_alpha = sum(s - b for s, b in pairs_10d) / len(pairs_10d) if pairs_10d else 0.0
+
+    tiers = []
+    for lo_s, hi_s, label in [(85, 101, "≥85"), (70, 85, "70–84"), (60, 70, "60–69")]:
+        tier = [r for r in buy_rows if lo_s <= r.score < hi_s]
+        if not tier:
+            continue
+        tv   = [r.ret_10d for r in tier if r.ret_10d is not None]
+        tw   = sum(1 for v in tv if v > 0)
+        tni  = len(tv)
+        tp   = [(r.ret_10d, r.nifty_10d) for r in tier
+                if r.ret_10d is not None and r.nifty_10d is not None]
+        lo_t, hi_t = _wilson_ci(tw, tni)
+        tiers.append({
+            "tier":       label,
+            "n":          len(tier),
+            "wins":       tw,
+            "win_rate":   round(tw / tni, 3) if tni else 0.0,
+            "ci_lo":      round(lo_t, 3),
+            "ci_hi":      round(hi_t, 3),
+            "avg_return": round(sum(tv) / len(tv), 2) if tv else 0.0,
+            "avg_alpha":  round(sum(s - b for s, b in tp) / len(tp), 2) if tp else 0.0,
+        })
+
+    def _gate_stats(subset: list[BacktestRow]) -> dict:
+        sv   = [r.ret_10d  for r in subset if r.ret_10d  is not None]
+        bv   = [r.nifty_10d for r in subset if r.nifty_10d is not None]
+        sw   = sum(1 for v in sv if v > 0)
+        sni  = len(sv)
+        rate = sw / sni if sni else 0.0
+        pp   = list(zip(sv, bv[:len(sv)]))
+        avg_a = sum(s - b for s, b in pp) / len(pp) if pp else 0.0
+        verdict = ("inconclusive" if sni < 10 else "PASS" if rate >= 0.55 else "FAIL")
+        return {"n": len(subset), "wins": sw, "win_rate": round(rate, 3),
+                "avg_alpha": round(avg_a, 2), "verdict": verdict}
+
+    payload = {
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "config": {
+            "months":    months,
+            "min_score": min_score,
+            "universe":  universe,
+            "benchmark": "Nifty Midcap 100 (^NSMIDCP)",
+        },
+        "pipeline": {
+            "total_filings":  total_filings,
+            "too_recent":     stats.get("too_recent",      0),
+            "no_xbrl":        stats.get("no_xbrl",         0),
+            "below_score":    stats.get("below_score",     0),
+            "buy_pre_regime": stats.get("buy_pre_regime",  0),
+            "regime_filtered":stats.get("regime_filtered", 0),
+            "passed":         n,
+        },
+        "summary": {
+            "n_buy":         n,
+            "n_hybrid":      len(hybrid_rows),
+            "win_rate_10d":  round(win_rate, 3),
+            "ci_lo":         round(lo_ci, 3),
+            "ci_hi":         round(hi_ci, 3),
+            "p_value":       round(p_val, 3),
+            "z_score":       round(z_score, 2),
+            "gate_pass":     gate_pass,
+            "mean_alpha_10d":round(mean_alpha, 2),
+            "expected_value":round(ev, 2),
+            "avg_win":       round(avg_win, 2),
+            "avg_loss":      round(avg_los, 2),
+        },
+        "tiers":           tiers,
+        "gate_comparison": [
+            {"gate": "Fundamental-only (tech gate off)", **_gate_stats(buy_rows)},
+            {"gate": "Hybrid (SMA/RSI/MACD ≥ 60)",      **_gate_stats(hybrid_rows)},
+        ],
+        "signals": [
+            {
+                "ticker":      r.ticker,
+                "quarter":     r.quarter,
+                "filing_date": str(r.filing_date),
+                "score":       r.score,
+                "action":      r.action,
+                "confidence":  r.confidence,
+                "ret_5d":      r.ret_5d,
+                "ret_10d":     r.ret_10d,
+                "ret_30d":     r.ret_30d,
+                "nifty_5d":    r.nifty_5d,
+                "nifty_10d":   r.nifty_10d,
+                "nifty_30d":   r.nifty_30d,
+                "tech_score":  r.tech_score,
+                "hybrid_pass": r.hybrid_pass,
+            }
+            for r in sorted(buy_rows, key=lambda x: x.filing_date, reverse=True)
+        ],
+    }
+
+    Path(export_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(export_path, "w") as fh:
+        json.dump(payload, fh, indent=2)
+    console.print(f"\n[green]Backtest results exported → {export_path}[/green]")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-async def main(tickers: list[str], months: int, min_score: float) -> None:
+async def main(tickers: list[str], months: int, min_score: float,
+               export_path: str | None = None) -> None:
     since = date.today() - timedelta(days=months * 30)
 
     console.print(f"\n[bold]India Small-Cap Hybrid Strategy Backtest[/bold]")
@@ -715,12 +1186,13 @@ async def main(tickers: list[str], months: int, min_score: float) -> None:
         return
 
     console.print(f"\nRunning strategy on {len(target_filings)} filings...\n")
-    rows: list[BacktestRow] = []
+    rows:  list[BacktestRow] = []
+    stats: dict              = {}
 
     for ticker, filing, all_filings, filing_idx in target_filings:
         row = await process_filing(
             ticker, filing, all_filings, filing_idx,
-            min_score, fund_config, hybrid_cfg,
+            min_score, fund_config, hybrid_cfg, stats,
         )
         if row:
             rows.append(row)
@@ -734,6 +1206,10 @@ async def main(tickers: list[str], months: int, min_score: float) -> None:
         return
 
     print_report(rows)
+    print_formal_evaluation(rows, stats, len(target_filings), months, min_score, tickers)
+
+    if export_path:
+        _export_results(rows, stats, len(target_filings), months, min_score, tickers, export_path)
 
 
 if __name__ == "__main__":
@@ -755,5 +1231,10 @@ if __name__ == "__main__":
         "--min-score", type=float, default=60.0, dest="min_score",
         help="Minimum fundamental score to include (default: 60)",
     )
+    parser.add_argument(
+        "--export", type=str, default=None, dest="export",
+        metavar="PATH",
+        help="Export results as JSON (e.g. data/backtest_india.json)",
+    )
     args = parser.parse_args()
-    asyncio.run(main(args.tickers, args.months, args.min_score))
+    asyncio.run(main(args.tickers, args.months, args.min_score, args.export))

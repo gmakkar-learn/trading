@@ -1,10 +1,10 @@
 import { Fragment, useEffect, useState } from "react";
 import { api } from "./api";
-import type { Signal, Position, Holding, BrokerOrder, Health, ServiceHealth } from "./api";
+import type { Signal, Position, Holding, BrokerOrder, Health, ServiceHealth, BacktestResult, BacktestSignalRow } from "./api";
 import { TvChart } from "./components/TvChart";
 import "./App.css";
 
-type Tab = "signals" | "positions" | "orders" | "watchlist" | "chart";
+type Tab = "signals" | "positions" | "orders" | "watchlist" | "chart" | "backtest";
 
 function badge(action: string) {
   const colors: Record<string, string> = { BUY: "#16a34a", SELL: "#dc2626", HOLD: "#d97706" };
@@ -632,6 +632,236 @@ function ChartTab({ ticker, market, onTickerChange, onMarketChange }: {
   );
 }
 
+function pctColor(v: number | null | undefined): string {
+  if (v == null) return "#9ca3af";
+  return v > 0 ? "#4ade80" : v < 0 ? "#f87171" : "#9ca3af";
+}
+
+function fmtPctBt(v: number | null | undefined): string {
+  if (v == null) return "—";
+  return (v >= 0 ? "+" : "") + v.toFixed(1) + "%";
+}
+
+function verdictBadge(v: "PASS" | "FAIL" | "inconclusive") {
+  const style: Record<string, { bg: string; label: string }> = {
+    PASS:          { bg: "#16a34a", label: "PASS ✓" },
+    FAIL:          { bg: "#dc2626", label: "FAIL ✗" },
+    inconclusive:  { bg: "#6b7280", label: "n < 10" },
+  };
+  const s = style[v] ?? style.inconclusive;
+  return (
+    <span style={{ background: s.bg, color: "#fff", padding: "2px 8px", borderRadius: 4, fontSize: 12, fontWeight: 600 }}>
+      {s.label}
+    </span>
+  );
+}
+
+function BacktestTab() {
+  const [data, setData] = useState<BacktestResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setData(await api.backtestIndia());
+    } catch (e: unknown) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  if (loading) return <p style={{ color: "#9ca3af" }}>Loading backtest data…</p>;
+  if (error) return (
+    <div>
+      <p style={{ color: "#f87171" }}>{error}</p>
+      <p style={{ color: "#6b7280", fontSize: 13 }}>
+        Run: <code style={{ background: "#1e293b", padding: "2px 6px", borderRadius: 4 }}>
+          uv run python scripts/backtest_india.py --months 36 --min-score 70 --export data/backtest_india.json
+        </code>
+      </p>
+    </div>
+  );
+  if (!data) return null;
+
+  const { config, pipeline, summary, tiers, gate_comparison, signals } = data;
+  const th = (label: string, right = false) => (
+    <th style={{ padding: "6px 8px", color: "#6b7280", fontSize: 12, textAlign: right ? "right" : "left", fontWeight: 400, borderBottom: "1px solid #374151" }}>{label}</th>
+  );
+  const td = (content: React.ReactNode, right = false) => (
+    <td style={{ padding: "7px 8px", textAlign: right ? "right" : "left", borderBottom: "1px solid #1f2937", fontSize: 13 }}>{content}</td>
+  );
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
+
+      {/* Verdict banner */}
+      <div style={{
+        padding: "16px 20px",
+        borderRadius: 8,
+        border: `2px solid ${summary.gate_pass ? "#16a34a" : "#dc2626"}`,
+        background: summary.gate_pass ? "#052e16" : "#450a0a",
+      }}>
+        <div style={{ fontSize: 18, fontWeight: 700, color: summary.gate_pass ? "#4ade80" : "#f87171", marginBottom: 8 }}>
+          Phase 3 Pre-Live Gate: {summary.gate_pass ? "PASS ✓" : "FAIL ✗"}
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 24, fontSize: 13, color: "#d1d5db" }}>
+          <span>+10d win rate: <strong style={{ color: summary.gate_pass ? "#4ade80" : "#f87171" }}>{(summary.win_rate_10d * 100).toFixed(1)}%</strong></span>
+          <span>90% CI: [{(summary.ci_lo * 100).toFixed(1)}%, {(summary.ci_hi * 100).toFixed(1)}%]</span>
+          <span>n = {summary.n_buy} signals</span>
+          <span>p-value: {summary.p_value.toFixed(3)}</span>
+          <span>EV: <span style={{ color: pctColor(summary.expected_value) }}>{fmtPctBt(summary.expected_value)}</span> per signal</span>
+          <span style={{ color: "#6b7280", fontSize: 12 }}>
+            {config.months}m · score≥{config.min_score} · {config.universe.length} tickers · {config.benchmark}
+          </span>
+        </div>
+      </div>
+
+      {/* Signal pipeline + summary side by side */}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 24 }}>
+        {/* Pipeline funnel */}
+        <div style={{ flex: "1 1 260px" }}>
+          <h3 style={{ color: "#9ca3af", fontSize: 13, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }}>Signal Pipeline</h3>
+          <table style={{ borderCollapse: "collapse", fontSize: 13, width: "100%" }}>
+            <tbody>
+              {[
+                ["Total filings",          pipeline.total_filings,   ""],
+                ["Too recent (<35d)",      pipeline.too_recent,      "#6b7280"],
+                ["XBRL / scoring error",   pipeline.no_xbrl,         "#6b7280"],
+                [`Below score ${config.min_score}`, pipeline.below_score, "#6b7280"],
+                ["BUY pre-regime",         pipeline.buy_pre_regime,  "#d97706"],
+                ["Regime filtered",        pipeline.regime_filtered, "#dc2626"],
+                ["BUY signals (final)",    pipeline.passed,          "#4ade80"],
+              ].map(([label, val, color]) => (
+                <tr key={label as string}>
+                  <td style={{ padding: "4px 8px", color: "#9ca3af" }}>{label}</td>
+                  <td style={{ padding: "4px 8px", textAlign: "right", fontWeight: 600, color: (color as string) || "#f9fafb" }}>{val}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Return profile */}
+        <div style={{ flex: "1 1 200px" }}>
+          <h3 style={{ color: "#9ca3af", fontSize: 13, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }}>Return Profile (+10d)</h3>
+          <table style={{ borderCollapse: "collapse", fontSize: 13, width: "100%" }}>
+            <tbody>
+              {[
+                ["Avg win",         fmtPctBt(summary.avg_win),   "#4ade80"],
+                ["Avg loss",        fmtPctBt(summary.avg_loss),  "#f87171"],
+                ["Mean alpha",      fmtPctBt(summary.mean_alpha_10d), pctColor(summary.mean_alpha_10d)],
+                ["z-score",         data.summary.z_score.toFixed(2), "#d1d5db"],
+                ["Significance",    summary.p_value <= 0.10 ? "p≤0.10 ✓" : `p=${summary.p_value.toFixed(3)}`, summary.p_value <= 0.10 ? "#4ade80" : "#d97706"],
+              ].map(([label, val, color]) => (
+                <tr key={label as string}>
+                  <td style={{ padding: "4px 8px", color: "#9ca3af" }}>{label}</td>
+                  <td style={{ padding: "4px 8px", textAlign: "right", fontWeight: 600, color: color as string }}>{val}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Gate comparison */}
+      <div>
+        <h3 style={{ color: "#9ca3af", fontSize: 13, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }}>Gate Comparison</h3>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead><tr>{th("Gate")}{th("n", true)}{th("+10d Win Rate", true)}{th("Avg Alpha", true)}{th("Verdict")}</tr></thead>
+          <tbody>
+            {gate_comparison.map(g => (
+              <tr key={g.gate}>
+                {td(g.gate)}
+                {td(g.n, true)}
+                {td(<span style={{ color: g.win_rate >= 0.55 ? "#4ade80" : "#f87171", fontWeight: 600 }}>{(g.win_rate * 100).toFixed(1)}%</span>, true)}
+                {td(<span style={{ color: pctColor(g.avg_alpha) }}>{fmtPctBt(g.avg_alpha)}</span>, true)}
+                {td(verdictBadge(g.verdict))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Score tier breakdown */}
+      {tiers.length > 0 && (
+        <div>
+          <h3 style={{ color: "#9ca3af", fontSize: 13, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }}>Score Tier Breakdown (+10d)</h3>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead><tr>{th("Tier")}{th("n", true)}{th("Win Rate", true)}{th("90% CI")}{th("Avg Return", true)}{th("Avg Alpha", true)}</tr></thead>
+            <tbody>
+              {tiers.map(t => (
+                <tr key={t.tier}>
+                  {td(<strong>{t.tier}</strong>)}
+                  {td(t.n, true)}
+                  {td(<span style={{ color: t.win_rate >= 0.55 ? "#4ade80" : "#f87171", fontWeight: 600 }}>{(t.win_rate * 100).toFixed(1)}%</span>, true)}
+                  {td(<span style={{ color: "#6b7280", fontSize: 12 }}>[{(t.ci_lo * 100).toFixed(1)}%, {(t.ci_hi * 100).toFixed(1)}%]</span>)}
+                  {td(<span style={{ color: pctColor(t.avg_return) }}>{fmtPctBt(t.avg_return)}</span>, true)}
+                  {td(<span style={{ color: pctColor(t.avg_alpha) }}>{fmtPctBt(t.avg_alpha)}</span>, true)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Signal table */}
+      <div>
+        <h3 style={{ color: "#9ca3af", fontSize: 13, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }}>
+          BUY Signals ({signals.length})
+        </h3>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr>
+              {th("Ticker")}{th("Quarter")}{th("Filed")}{th("Score", true)}
+              {th("Tech Gate", true)}{th("Conf")}
+              {th("+5d", true)}{th("+10d", true)}{th("+30d", true)}
+            </tr>
+          </thead>
+          <tbody>
+            {(signals as BacktestSignalRow[]).map((s, i) => {
+              const alpha10 = s.ret_10d != null && s.nifty_10d != null ? s.ret_10d - s.nifty_10d : null;
+              return (
+                <tr key={i}>
+                  {td(<strong>{s.ticker}</strong>)}
+                  {td(<span style={{ color: "#9ca3af" }}>{s.quarter}</span>)}
+                  {td(<span style={{ color: "#6b7280" }}>{s.filing_date}</span>)}
+                  {td(<span style={{ color: s.score >= 80 ? "#4ade80" : "#d1d5db" }}>{s.score.toFixed(1)}</span>, true)}
+                  {td(
+                    s.tech_score == null
+                      ? <span style={{ color: "#6b7280" }}>—</span>
+                      : <span style={{ color: s.hybrid_pass ? "#4ade80" : "#f59e0b" }}>
+                          {s.hybrid_pass ? "✓" : "✗"} {s.tech_score.toFixed(0)}
+                        </span>,
+                    true
+                  )}
+                  {td(<span style={{ fontSize: 11, color: "#9ca3af" }}>{s.confidence}</span>)}
+                  {td(<span style={{ color: pctColor(s.ret_5d) }}>{fmtPctBt(s.ret_5d)}</span>, true)}
+                  {td(
+                    <span style={{ color: pctColor(s.ret_10d) }}>
+                      {fmtPctBt(s.ret_10d)}
+                      {alpha10 != null && <span style={{ color: pctColor(alpha10), fontSize: 11, marginLeft: 4 }}>({alpha10 >= 0 ? "+" : ""}{alpha10.toFixed(1)})</span>}
+                    </span>,
+                    true
+                  )}
+                  {td(<span style={{ color: pctColor(s.ret_30d) }}>{fmtPctBt(s.ret_30d)}</span>, true)}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        <p style={{ color: "#6b7280", fontSize: 11, marginTop: 8 }}>
+          +10d alpha vs Nifty Midcap 100 shown in brackets. Generated {new Date(data.generated_at).toLocaleString()}.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 const SERVICE_LABELS: Record<string, string> = {
   database:     "DB",
   telegram:     "Telegram",
@@ -712,11 +942,12 @@ export default function App() {
   }, []);
 
   const tabs: { id: Tab; label: string }[] = [
-    { id: "signals", label: "Signals" },
-    { id: "positions", label: "Positions" },
-    { id: "orders", label: "Orders" },
-    { id: "watchlist", label: "Watchlist" },
-    { id: "chart", label: "Chart" },
+    { id: "signals",  label: "Signals" },
+    { id: "positions",label: "Positions" },
+    { id: "orders",   label: "Orders" },
+    { id: "watchlist",label: "Watchlist" },
+    { id: "chart",    label: "Chart" },
+    { id: "backtest", label: "Backtest" },
   ];
 
   return (
@@ -755,6 +986,7 @@ export default function App() {
         <div style={{ display: tab === "chart" ? "block" : "none" }}>
           <ChartTab ticker={chartTicker} market={chartMarket} onTickerChange={setChartTicker} onMarketChange={setChartMarket} />
         </div>
+        {tab === "backtest" && <BacktestTab />}
       </div>
     </div>
   );

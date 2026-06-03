@@ -79,6 +79,79 @@ export interface Health {
   active_markets: string[];
 }
 
+export interface BacktestSignalRow {
+  ticker: string;
+  quarter: string;
+  filing_date: string;
+  score: number;
+  action: string;
+  confidence: string;
+  ret_5d: number | null;
+  ret_10d: number | null;
+  ret_30d: number | null;
+  nifty_5d: number | null;
+  nifty_10d: number | null;
+  nifty_30d: number | null;
+  tech_score: number | null;
+  hybrid_pass: boolean;
+}
+
+export interface BacktestTier {
+  tier: string;
+  n: number;
+  wins: number;
+  win_rate: number;
+  ci_lo: number;
+  ci_hi: number;
+  avg_return: number;
+  avg_alpha: number;
+}
+
+export interface BacktestGateRow {
+  gate: string;
+  n: number;
+  wins: number;
+  win_rate: number;
+  avg_alpha: number;
+  verdict: "PASS" | "FAIL" | "inconclusive";
+}
+
+export interface BacktestResult {
+  generated_at: string;
+  config: {
+    months: number;
+    min_score: number;
+    universe: string[];
+    benchmark: string;
+  };
+  pipeline: {
+    total_filings: number;
+    too_recent: number;
+    no_xbrl: number;
+    below_score: number;
+    buy_pre_regime: number;
+    regime_filtered: number;
+    passed: number;
+  };
+  summary: {
+    n_buy: number;
+    n_hybrid: number;
+    win_rate_10d: number;
+    ci_lo: number;
+    ci_hi: number;
+    p_value: number;
+    z_score: number;
+    gate_pass: boolean;
+    mean_alpha_10d: number;
+    expected_value: number;
+    avg_win: number;
+    avg_loss: number;
+  };
+  tiers: BacktestTier[];
+  gate_comparison: BacktestGateRow[];
+  signals: BacktestSignalRow[];
+}
+
 export const api = {
   health: () => get<Health>("/health"),
   signals: (market?: string) =>
@@ -100,4 +173,5 @@ export const api = {
     order_type: string;
     limit_price: number;
   }) => post("/api/orders", body),
+  backtestIndia: () => get<BacktestResult>("/api/backtest/india"),
 };

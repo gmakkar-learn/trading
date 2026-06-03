@@ -27,7 +27,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from api.routers import health, orders, positions, signals, watchlist, telegram_webhook, debug, tradingview as tv_router
+from api.routers import health, orders, positions, signals, watchlist, telegram_webhook, debug, tradingview as tv_router, backtest
 from api.state import get_state
 from agents.monitor.agent import MonitorAgent
 from agents.risk_guard.agent import RiskGuardAgent
@@ -301,6 +301,7 @@ app.include_router(watchlist.router)
 app.include_router(telegram_webhook.router)
 app.include_router(debug.router)
 app.include_router(tv_router.router)
+app.include_router(backtest.router)
 
 # Serve React dashboard if built
 if _FRONTEND_DIR.exists():
